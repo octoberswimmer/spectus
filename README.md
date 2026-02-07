@@ -1,77 +1,77 @@
-# Markdown CRM
+# Spectus - Markdown Kanban for Git
 
-A browser-based Kanban board that uses markdown files for storage. Track leads, manage sales pipelines, and keep your data in version control.
-
-Based on [MarkdownTaskManager](https://github.com/ioniks/MarkdownTaskManager).
-
-## Getting Started
-
-1. **Clone this repository**
-   ```bash
-   git clone git@github.com:octoberswimmer/crm.git
-   cd crm
-   ```
-
-2. **Open the application**
-
-   Open `task-manager.html` in a modern browser (Chrome, Edge, or another Chromium-based browser that supports the File System Access API).
-
-3. **Select your project directory**
-
-   Click the "Get Started" button and select the directory containing your `kanban.md` file.
-
-4. **Start managing tasks**
-
-   - Drag and drop cards between columns
-   - Click cards to view details
-   - Use the "+ Task" button to create new tasks
-   - Changes are automatically saved to `kanban.md`
-
-5. **Commit your changes**
-
-   Since tasks are stored in markdown files, you can track changes with git:
-   ```bash
-   git add kanban.md
-   git commit
-   ```
+A GitHub-backed Kanban board that reads and writes `kanban.md` + `archive.md` directly in a repository using the GitHub GraphQL API. The UI is a Masc (Go WASM) app, and the server handles GitHub OAuth.
 
 ## Features
+- Load a repo + markdown paths from the UI.
+- Edit tasks, subtasks, tags, and columns.
+- Archive and restore tasks.
+- Commit changes directly to the repo (default branch).
+- Persist repo settings in localStorage per user.
 
-- Drag-and-drop Kanban board
-- Customizable columns, categories, and tags
-- Subtask management
-- Task filtering by tags, category, and assignee
-- Automatic last-modified date tracking
-- Archive completed tasks
-- Multi-language support (English/French)
+## Requirements
+- Go 1.25+
+- A GitHub OAuth App (or GitHub App with OAuth flow) configured for this server.
 
-## File Structure
+## Quick Start
+1. Build the WASM bundle:
+   ```bash
+   make build
+   ```
+2. Run the server:
+   ```bash
+   go run .
+   ```
+   or build a binary:
+   ```bash
+   make kanban
+   ./bin/kanban
+   ```
+3. Visit `http://localhost:8080`, log in with GitHub, enter a repo (owner/name), and load your board.
 
-- `kanban.md` - Active tasks organized by column
-- `archive.md` - Archived tasks (created automatically)
-- `task-manager.html` - The application (single HTML file)
+## Environment Variables
+Required:
+- `CLIENT_ID`: GitHub OAuth client ID.
+- `CLIENT_SECRET`: GitHub OAuth client secret.
 
-## Configuration
+Recommended (persist sessions across restarts):
+- `HASH_KEY`: 32-byte hash key for secure cookies.
+- `BLOCK_KEY`: 32-byte block key for secure cookies.
 
-Edit the Configuration section in `kanban.md` to customize:
+Suggested generation:
+```bash
+# 32-byte hash key (32 chars)
+HASH_KEY=$(openssl rand -base64 24)
 
-```markdown
-## ⚙️ Configuration
-
-**Columns**: 📝 Prospect (prospect) | 🚀 Contacted (contacted) | 👨 Dev Trial (dev-trial) | 🏢Company Trial (company-trial) | 💵 Sold (sold) | 👎No Sale (no-sale)
-
-**Categories**: ISV, Consulting Firm, Internal, Independent Consultant
-
-**Users**: @xn, @jim
-
-**Tags**: #packaging #multiple-packages #unpackaged #github #circleci #jenkins #ado #bug-reporter
+# 32-byte block key (32 chars; AES-256)
+BLOCK_KEY=$(openssl rand -base64 24)
 ```
 
-## Browser Requirements
+Optional:
+- `ADDR`: Server listen address. Default `:8080`.
+- `PORT`: Used if `ADDR` is not set.
+- `PUBLIC_URL`: Base URL for OAuth callback and secure cookie flag. Default derived from `ADDR`.
+- `GITHUB_SCOPES`: Comma-separated scopes. Default `repo,read:user`.
+- `SESSION_COOKIE`: Cookie name. Default `kanban_session`.
+- `KANBAN_REPO`: Default repo in `owner/name` form (shown in the UI).
+- `KANBAN_PATH`: Default kanban path. Default `kanban.md`.
+- `ARCHIVE_PATH`: Default archive path. Default `archive.md`.
+- `COMMIT_MESSAGE`: Default commit message. Default `Update kanban`.
 
-This application uses the File System Access API, which requires:
-- Chrome 86+
-- Edge 86+
-- Opera 72+
+## GitHub OAuth Setup
+Create a GitHub OAuth App and set:
+- Homepage URL: `PUBLIC_URL`
+- Authorization callback URL: `PUBLIC_URL/auth/github/callback`
 
-Firefox and Safari are not currently supported.
+Make sure the app has the scopes listed in `GITHUB_SCOPES` (the default includes `repo`).
+
+## File Structure
+- `kanban.md` - Active tasks organized by column
+- `archive.md` - Archived tasks
+- `masc/` - Go WASM UI
+- `templates/` - HTML shell
+- `static/` - CSS + WASM assets
+
+## Notes
+- Commits go to the repo’s default branch using `createCommitOnBranch`.
+- If `kanban.md` or `archive.md` is missing, defaults are generated and the board starts in a dirty state until you commit.

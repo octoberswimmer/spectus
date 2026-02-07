@@ -1,0 +1,106 @@
+//go:build js && wasm
+
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"syscall/js"
+)
+
+const githubGraphQLEndpoint = "https://api.github.com/graphql"
+
+type graphQLResponse struct {
+	Data   json.RawMessage `json:"data"`
+	Errors []struct {
+		Message string `json:"message"`
+	} `json:"errors"`
+}
+
+type GraphQLClient struct {
+	Token string
+}
+
+func (c *GraphQLClient) Query(query string, variables map[string]interface{}, out interface{}) error {
+	payload := map[string]interface{}{"query": query}
+	if variables != nil {
+		payload["variables"] = variables
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	headers := map[string]interface{}{
+		"Content-Type": "application/json",
+		"Accept":       "application/vnd.github+json",
+	}
+	if c.Token != "" {
+		headers["Authorization"] = "Bearer " + c.Token
+	}
+
+	options := map[string]interface{}{
+		"method":  "POST",
+		"headers": headers,
+		"body":    string(body),
+	}
+
+	respValue, err := awaitPromise(js.Global().Call("fetch", githubGraphQLEndpoint, js.ValueOf(options)))
+	if err != nil {
+		return err
+	}
+
+	ok := respValue.Get("ok").Bool()
+	textValue, err := awaitPromise(respValue.Call("text"))
+	if err != nil {
+		return err
+	}
+	text := textValue.String()
+	if !ok {
+		return fmt.Errorf("graphql status %d: %s", respValue.Get("status").Int(), strings.TrimSpace(text))
+	}
+
+	var envelope graphQLResponse
+	if err := json.Unmarshal([]byte(text), &envelope); err != nil {
+		return err
+	}
+	if len(envelope.Errors) > 0 {
+		return errors.New(envelope.Errors[0].Message)
+	}
+	if out != nil {
+		return json.Unmarshal(envelope.Data, out)
+	}
+	return nil
+}
+
+func awaitPromise(promise js.Value) (js.Value, error) {
+	thenChan := make(chan js.Value, 1)
+	errChan := make(chan js.Value, 1)
+	then := js.FuncOf(func(this js.Value, args []js.Value) any {
+		thenChan <- args[0]
+		return nil
+	})
+	catch := js.FuncOf(func(this js.Value, args []js.Value) any {
+		errChan <- args[0]
+		return nil
+	})
+	promise.Call("then", then).Call("catch", catch)
+	defer then.Release()
+	defer catch.Release()
+
+	select {
+	case value := <-thenChan:
+		return value, nil
+	case errVal := <-errChan:
+		if errVal.Type() == js.TypeString {
+			return js.Value{}, errors.New(errVal.String())
+		}
+		if errVal.Get("message").Type() == js.TypeString {
+			return js.Value{}, errors.New(errVal.Get("message").String())
+		}
+		return js.Value{}, errors.New("promise rejected")
+	}
+}

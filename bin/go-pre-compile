@@ -1,0 +1,13 @@
+#!/bin/sh
+
+set -e
+
+mkdir -p static
+
+env GOOS=js GOARCH=wasm go build -o static/main.wasm ./masc
+
+if [ -f "$(go env GOROOT)/lib/wasm/wasm_exec.js" ]; then
+  cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" static/wasm_exec.js
+else
+  cp "$(go env GOROOT)/misc/wasm/wasm_exec.js" static/wasm_exec.js
+fi

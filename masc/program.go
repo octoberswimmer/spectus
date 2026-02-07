@@ -1,0 +1,2122 @@
+//go:build js && wasm
+
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"math/rand"
+	"regexp"
+	"sort"
+	"strings"
+	"syscall/js"
+	"time"
+
+	"github.com/octoberswimmer/masc"
+	"github.com/octoberswimmer/masc/elem"
+	"github.com/octoberswimmer/masc/event"
+)
+
+var idRand = rand.New(rand.NewSource(time.Now().UnixNano()))
+
+type TaskForm struct {
+	ID          string
+	Title       string
+	Status      string
+	Category    string
+	Assignees   string
+	Tags        string
+	Created     string
+	Completed   string
+	Description string
+	Notes       string
+	Subtasks    []Subtask
+}
+
+type Program struct {
+	masc.Core
+
+	cfg ClientConfig
+
+	token    string
+	loggedIn bool
+	viewer   User
+
+	repo       RepoSelection
+	branch     string
+	headOID    string
+	repoLoaded bool
+
+	config   BoardConfig
+	tasks    []Task
+	archived []Task
+
+	loading          bool
+	commitInProgress bool
+	dirty            bool
+	error            string
+	status           string
+
+	filters []Filter
+	search  string
+
+	modal        ModalMode
+	detailTaskID string
+	form         TaskForm
+	archiveSearch string
+	newSubtaskText string
+	newSubtaskDue  string
+}
+
+func NewProgram(cfg ClientConfig) *Program {
+	return &Program{
+		cfg: cfg,
+	}
+}
+
+func (p *Program) Init() masc.Cmd {
+	return nil
+}
+
+func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
+	switch msg := msg.(type) {
+	case SetSession:
+		return p.handleSession(msg)
+	case ViewerLoaded:
+		p.viewer = msg.Viewer
+		if strings.TrimSpace(p.cfg.DefaultRepo) == "" {
+			p.loading = false
+			p.error = "Repository is not configured."
+			return p, nil
+		}
+		p.loading = true
+		return p, p.loadRepoCmd()
+	case LoadError:
+		p.loading = false
+		p.commitInProgress = false
+		p.error = msg.Error
+		return p, nil
+	case LoadRepo:
+		if p.loading {
+			return p, nil
+		}
+		if strings.TrimSpace(p.cfg.DefaultRepo) == "" {
+			p.error = "Repository is not configured."
+			return p, nil
+		}
+		p.error = ""
+		p.status = "Loading repository…"
+		p.loading = true
+		return p, p.loadRepoCmd()
+	case RepoLoaded:
+		p.loading = false
+		p.commitInProgress = false
+		p.error = ""
+		p.status = "Repository loaded."
+		p.repo = msg.Repo
+		p.branch = msg.Branch
+		p.headOID = msg.HeadOID
+		p.repoLoaded = true
+
+		kanbanContent := msg.KanbanContent
+		if msg.MissingKanban || strings.TrimSpace(kanbanContent) == "" {
+			kanbanContent = createDefaultKanbanContent()
+		}
+		config, tasks := parseKanban(kanbanContent)
+		p.config = config
+		p.tasks = tasks
+
+		archiveContent := msg.ArchiveContent
+		if msg.MissingArchive || strings.TrimSpace(archiveContent) == "" {
+			archiveContent = createDefaultArchiveContent()
+		}
+		p.archived = parseArchive(archiveContent)
+
+		p.dirty = msg.MissingKanban || msg.MissingArchive
+		return p, nil
+	case CommitChanges:
+		if !p.repoLoaded || !p.dirty || p.commitInProgress {
+			return p, nil
+		}
+		p.commitInProgress = true
+		p.error = ""
+		p.status = "Committing changes…"
+		return p, p.commitCmd()
+	case CommitResult:
+		p.commitInProgress = false
+		if msg.Error != "" {
+			p.error = msg.Error
+			return p, nil
+		}
+		p.dirty = false
+		if msg.OID != "" {
+			p.headOID = msg.OID
+		}
+		if msg.URL != "" {
+			p.status = "Committed: " + msg.URL
+		} else {
+			p.status = "Commit saved."
+		}
+		return p, nil
+	case UpdateSearch:
+		p.search = msg.Value
+		return p, nil
+	case AddFilter:
+		value := strings.TrimSpace(msg.Value)
+		if value == "" {
+			return p, nil
+		}
+		for _, f := range p.filters {
+			if f.Type == msg.Type && f.Value == value {
+				return p, nil
+			}
+		}
+		p.filters = append(p.filters, Filter{Type: msg.Type, Value: value})
+		return p, nil
+	case RemoveFilter:
+		if msg.Index >= 0 && msg.Index < len(p.filters) {
+			p.filters = append(p.filters[:msg.Index], p.filters[msg.Index+1:]...)
+		}
+		return p, nil
+	case ClearFilters:
+		p.filters = nil
+		return p, nil
+	case OpenModal:
+		p.modal = msg.Mode
+		p.error = ""
+		switch msg.Mode {
+		case ModalDetail:
+			p.detailTaskID = msg.TaskID
+		case ModalEdit:
+			p.detailTaskID = ""
+			p.form = p.formForTask(msg.TaskID)
+			p.newSubtaskText = ""
+			p.newSubtaskDue = ""
+		case ModalArchive:
+			p.archiveSearch = ""
+		}
+		return p, nil
+	case CloseModal:
+		p.modal = ModalNone
+		p.detailTaskID = ""
+		p.newSubtaskText = ""
+		p.newSubtaskDue = ""
+		return p, nil
+	case UpdateFormField:
+		switch msg.Field {
+		case "title":
+			p.form.Title = msg.Value
+		case "status":
+			p.form.Status = msg.Value
+		case "category":
+			p.form.Category = msg.Value
+		case "assignees":
+			p.form.Assignees = msg.Value
+		case "tags":
+			p.form.Tags = msg.Value
+		case "created":
+			p.form.Created = msg.Value
+		case "completed":
+			p.form.Completed = msg.Value
+		case "description":
+			p.form.Description = msg.Value
+		case "notes":
+			p.form.Notes = msg.Value
+		case "new_subtask_text":
+			p.newSubtaskText = msg.Value
+		case "new_subtask_due":
+			p.newSubtaskDue = msg.Value
+		}
+		return p, nil
+	case AddFormSubtask:
+		text := strings.TrimSpace(msg.Text)
+		if text == "" {
+			return p, nil
+		}
+		p.form.Subtasks = append(p.form.Subtasks, Subtask{Text: text, DueDate: normalizeDueDate(msg.DueDate)})
+		p.newSubtaskText = ""
+		p.newSubtaskDue = ""
+		return p, nil
+	case ToggleFormSubtask:
+		if msg.Index >= 0 && msg.Index < len(p.form.Subtasks) {
+			p.form.Subtasks[msg.Index].Completed = !p.form.Subtasks[msg.Index].Completed
+		}
+		return p, nil
+	case UpdateFormSubtaskText:
+		if msg.Index >= 0 && msg.Index < len(p.form.Subtasks) {
+			p.form.Subtasks[msg.Index].Text = msg.Value
+		}
+		return p, nil
+	case UpdateFormSubtaskDueDate:
+		if msg.Index >= 0 && msg.Index < len(p.form.Subtasks) {
+			p.form.Subtasks[msg.Index].DueDate = normalizeDueDate(msg.Value)
+		}
+		return p, nil
+	case DeleteFormSubtask:
+		if msg.Index >= 0 && msg.Index < len(p.form.Subtasks) {
+			p.form.Subtasks = append(p.form.Subtasks[:msg.Index], p.form.Subtasks[msg.Index+1:]...)
+		}
+		return p, nil
+	case SaveTask:
+		return p.handleSaveTask()
+	case DeleteTask:
+		p.deleteTaskByID(msg.TaskID)
+		return p, nil
+	case ArchiveTask:
+		p.archiveTask(msg.TaskID)
+		return p, nil
+	case RestoreTask:
+		p.restoreTask(msg.TaskID)
+		return p, nil
+	case MoveTaskPosition:
+		p.moveTaskWithinColumn(msg.TaskID, msg.Direction)
+		return p, nil
+	case AddColumn:
+		p.addColumn()
+		return p, nil
+	case UpdateColumn:
+		p.updateColumn(msg.Index, msg.Field, msg.Value)
+		return p, nil
+	case DeleteColumn:
+		p.deleteColumn(msg.Index)
+		return p, nil
+	case MoveColumn:
+		p.moveColumn(msg.Index, msg.Direction)
+		return p, nil
+	case UpdateArchiveSearch:
+		p.archiveSearch = msg.Value
+		return p, nil
+	case Logout:
+		return p, logoutCmd()
+	}
+
+	return p, nil
+}
+
+func (p *Program) Render(send func(masc.Msg)) masc.ComponentOrHTML {
+	if !p.loggedIn {
+		return p.renderLogin(send)
+	}
+
+	return elem.Div(
+		p.renderHeader(send),
+		masc.If(p.repoLoaded, p.renderFilterBar(send)),
+		elem.Main(
+			masc.Markup(masc.Class("container")),
+			masc.If(p.loading, elem.Div(masc.Markup(masc.Class("loading")), masc.Text("Loading…"))),
+			masc.If(!p.repoLoaded && !p.loading, p.renderWelcome()),
+			masc.If(p.repoLoaded, p.renderBoard(send)),
+			masc.If(p.error != "", p.renderError()),
+			masc.If(p.status != "", p.renderStatus()),
+		),
+		p.renderModal(send),
+	)
+}
+
+func (p *Program) handleSession(msg SetSession) (masc.Model, masc.Cmd) {
+	var session Session
+	if msg.Session != "" {
+		_ = json.Unmarshal([]byte(msg.Session), &session)
+	}
+	if session.AccessToken == "" {
+		p.loggedIn = false
+		p.token = ""
+		p.repoLoaded = false
+		return p, nil
+	}
+	p.loggedIn = true
+	p.token = session.AccessToken
+	p.loading = true
+	p.error = ""
+	p.status = ""
+	return p, p.fetchViewerCmd()
+}
+
+func (p *Program) fetchViewerCmd() masc.Cmd {
+	token := p.token
+	return func() masc.Msg {
+		client := &GraphQLClient{Token: token}
+		viewer, err := fetchViewer(client)
+		if err != nil {
+			return LoadError{Error: err.Error()}
+		}
+		return ViewerLoaded{Viewer: viewer}
+	}
+}
+
+func (p *Program) loadRepoCmd() masc.Cmd {
+	owner, name, repoName, err := splitRepo(strings.TrimSpace(p.cfg.DefaultRepo))
+	if err != nil {
+		return func() masc.Msg { return LoadError{Error: err.Error()} }
+	}
+	kanbanPath := strings.TrimSpace(p.cfg.KanbanPath)
+	if kanbanPath == "" {
+		kanbanPath = "kanban.md"
+	}
+	archivePath := strings.TrimSpace(p.cfg.ArchivePath)
+	if archivePath == "" {
+		archivePath = "archive.md"
+	}
+	token := p.token
+	return func() masc.Msg {
+		client := &GraphQLClient{Token: token}
+		files, err := fetchRepoFiles(client, owner, name, kanbanPath, archivePath)
+		if err != nil {
+			return LoadError{Error: err.Error()}
+		}
+		repo := RepoSelection{
+			Owner:       owner,
+			Name:        name,
+			Repo:        repoName,
+			KanbanPath:  kanbanPath,
+			ArchivePath: archivePath,
+			Branch:      files.Branch,
+		}
+		return RepoLoaded{
+			Repo:           repo,
+			Branch:         files.Branch,
+			HeadOID:        files.HeadOID,
+			KanbanContent:  files.KanbanContent,
+			ArchiveContent: files.ArchiveContent,
+			MissingKanban:  files.MissingKanban,
+			MissingArchive: files.MissingArchive,
+		}
+	}
+}
+
+func (p *Program) commitCmd() masc.Cmd {
+	repoName := p.repo.Repo
+	branch := p.branch
+	headOID := p.headOID
+	message := strings.TrimSpace(p.cfg.CommitMessage)
+	if message == "" {
+		message = "Update kanban"
+	}
+	kanban := p.generateKanbanMarkdown()
+	archive := p.generateArchiveMarkdown()
+	files := map[string]string{
+		p.repo.KanbanPath:  kanban,
+		p.repo.ArchivePath: archive,
+	}
+	token := p.token
+	return func() masc.Msg {
+		client := &GraphQLClient{Token: token}
+		result, err := commitRepoFiles(client, repoName, branch, headOID, message, files)
+		if err != nil {
+			return CommitResult{Error: err.Error()}
+		}
+		return CommitResult{URL: result.URL, OID: result.OID}
+	}
+}
+
+func (p *Program) renderLogin(send func(masc.Msg)) masc.ComponentOrHTML {
+	return elem.Div(
+		p.renderHeader(send),
+		elem.Main(
+			masc.Markup(masc.Class("container")),
+			elem.Div(
+				masc.Markup(masc.Class("summary-card")),
+				elem.Heading2(masc.Text("Connect GitHub")),
+				elem.Paragraph(masc.Text("This app uses GitHub OAuth and commits markdown updates directly to your repository.")),
+				elem.Div(
+					masc.Markup(masc.Class("actions")),
+					elem.Anchor(
+						masc.Markup(masc.Class("btn", "btn-primary"), masc.Attribute("href", "/login")),
+						masc.Text("Login with GitHub"),
+					),
+				),
+			),
+		),
+	)
+}
+
+func (p *Program) renderHeader(send func(masc.Msg)) masc.ComponentOrHTML {
+	return elem.Header(
+		masc.Markup(masc.Class("header")),
+		elem.Div(
+			masc.Markup(masc.Class("header-content")),
+			elem.Div(
+				masc.Markup(masc.Class("brand")),
+				elem.Div(masc.Markup(masc.Class("brand-mark")), masc.Text("K")),
+				elem.Div(
+					elem.Div(masc.Markup(masc.Class("brand-title")), masc.Text("AER Sales Kanban")),
+					elem.Div(masc.Markup(masc.Class("brand-sub")), masc.Text("GitHub-backed Markdown boards")),
+				),
+			),
+			elem.Div(
+				masc.Markup(masc.Class("header-actions")),
+				masc.If(p.repoLoaded,
+					elem.Div(masc.Markup(masc.Class("status-pill")), masc.Text(p.repo.Repo+"@"+p.branch)),
+				),
+				masc.If(p.repoLoaded,
+					elem.Button(
+						masc.Markup(masc.Class("btn", "btn-secondary"), event.Click(func(e *masc.Event) { send(OpenModal{Mode: ModalEdit}) })),
+						masc.Text("➕ New"),
+					),
+				),
+				masc.If(p.repoLoaded,
+					elem.Button(
+						masc.Markup(masc.Class("btn", "btn-secondary"), event.Click(func(e *masc.Event) { send(OpenModal{Mode: ModalArchive}) })),
+						masc.Text("📦 Archives"),
+					),
+				),
+				masc.If(p.repoLoaded,
+					elem.Button(
+						masc.Markup(masc.Class("btn", "btn-secondary"), event.Click(func(e *masc.Event) { send(OpenModal{Mode: ModalColumns}) })),
+						masc.Text("⚙️ Columns"),
+					),
+				),
+				masc.If(p.repoLoaded,
+					elem.Button(
+						masc.Markup(
+							masc.Class("btn", "btn-primary"),
+							masc.MarkupIf(!p.dirty || p.commitInProgress, masc.Property("disabled", true)),
+							event.Click(func(e *masc.Event) { send(CommitChanges{}) }),
+						),
+						masc.Text("💾 Commit"),
+					),
+				),
+				masc.If(p.loggedIn,
+					elem.Button(
+						masc.Markup(masc.Class("btn", "btn-ghost"), event.Click(func(e *masc.Event) {
+							send(LoadRepo{})
+						})),
+						masc.Text("↻ Reload"),
+					),
+				),
+				masc.If(p.loggedIn,
+					elem.Button(
+						masc.Markup(masc.Class("btn", "btn-secondary"), event.Click(func(e *masc.Event) { send(Logout{}) })),
+						masc.Text("Logout"),
+					),
+				),
+			),
+		),
+	)
+}
+
+func (p *Program) renderWelcome() masc.ComponentOrHTML {
+	return elem.Div(
+		masc.Markup(masc.Class("welcome")),
+		elem.Heading2(masc.Text("Repository not configured")),
+		elem.Paragraph(masc.Text("Ask an administrator to set the default repository for this workspace.")),
+	)
+}
+
+func (p *Program) renderFilterBar(send func(masc.Msg)) masc.ComponentOrHTML {
+	categories, users, tags := p.uniqueValues()
+
+	tagOptions := make([]masc.ComponentOrHTML, 0, len(tags)+1)
+	tagOptions = append(tagOptions, elem.Option(masc.Markup(masc.Property("value", "")), masc.Text("Select…")))
+	for _, tag := range tags {
+		tagOptions = append(tagOptions, elem.Option(masc.Markup(masc.Property("value", tag)), masc.Text(tag)))
+	}
+
+	catOptions := make([]masc.ComponentOrHTML, 0, len(categories)+1)
+	catOptions = append(catOptions, elem.Option(masc.Markup(masc.Property("value", "")), masc.Text("Select…")))
+	for _, cat := range categories {
+		catOptions = append(catOptions, elem.Option(masc.Markup(masc.Property("value", cat)), masc.Text(cat)))
+	}
+
+	userOptions := make([]masc.ComponentOrHTML, 0, len(users)+2)
+	userOptions = append(userOptions, elem.Option(masc.Markup(masc.Property("value", "")), masc.Text("Select…")))
+	userOptions = append(userOptions, elem.Option(masc.Markup(masc.Property("value", "<unassigned>")), masc.Text("<Unassigned>")))
+	for _, user := range users {
+		userOptions = append(userOptions, elem.Option(masc.Markup(masc.Property("value", normalizeUserID(user))), masc.Text(user)))
+	}
+
+	return elem.Div(
+		masc.Markup(masc.Class("filter-bar")),
+		elem.Div(
+			masc.Markup(masc.Class("filter-content")),
+			elem.Div(
+				masc.Markup(masc.Class("filter-row")),
+				elem.Div(
+					masc.Markup(masc.Class("search-wrap")),
+					elem.Input(
+						masc.Markup(
+							masc.Class("search-input"),
+							masc.Property("type", "text"),
+							masc.Property("placeholder", "Search…"),
+							masc.Property("value", p.search),
+							event.Input(func(e *masc.Event) { send(UpdateSearch{Value: e.Target.Get("value").String()}) }),
+						),
+					),
+				),
+			),
+			elem.Div(
+				masc.Markup(masc.Class("filter-row")),
+			elem.Div(
+				masc.Markup(masc.Class("filter-group")),
+				elem.Label(masc.Text("Tags:")),
+				elem.Select(
+					append([]masc.MarkupOrChild{
+						masc.Markup(event.Change(func(e *masc.Event) {
+							send(AddFilter{Type: "tag", Value: e.Target.Get("value").String()})
+						})),
+					}, toMarkupChildren(tagOptions)...)...,
+				),
+			),
+			elem.Div(
+				masc.Markup(masc.Class("filter-group")),
+				elem.Label(masc.Text("Category:")),
+				elem.Select(
+					append([]masc.MarkupOrChild{
+						masc.Markup(event.Change(func(e *masc.Event) {
+							send(AddFilter{Type: "category", Value: e.Target.Get("value").String()})
+						})),
+					}, toMarkupChildren(catOptions)...)...,
+				),
+			),
+			elem.Div(
+				masc.Markup(masc.Class("filter-group")),
+				elem.Label(masc.Text("User:")),
+				elem.Select(
+					append([]masc.MarkupOrChild{
+						masc.Markup(event.Change(func(e *masc.Event) {
+							send(AddFilter{Type: "user", Value: e.Target.Get("value").String()})
+						})),
+					}, toMarkupChildren(userOptions)...)...,
+				),
+			),
+				elem.Button(
+					masc.Markup(masc.Class("btn", "btn-secondary"), event.Click(func(e *masc.Event) { send(ClearFilters{}) })),
+					masc.Text("✕ Clear all"),
+				),
+			),
+			elem.Div(
+				append([]masc.MarkupOrChild{masc.Markup(masc.Class("active-filters"))}, toMarkupChildren(p.renderFilterPills(send))...)...,
+			),
+		),
+	)
+}
+
+func (p *Program) renderFilterPills(send func(masc.Msg)) []masc.ComponentOrHTML {
+	pills := make([]masc.ComponentOrHTML, 0, len(p.filters))
+	for idx, f := range p.filters {
+		display := f.Value
+		if f.Type == "user" && f.Value != "<unassigned>" {
+			display = p.fullUserFormat(f.Value)
+		}
+		pills = append(pills, elem.Div(
+			masc.Markup(masc.Class("filter-pill")),
+			masc.Text(display),
+			elem.Button(
+				masc.Markup(masc.Class("btn", "btn-ghost"), event.Click(func(e *masc.Event) { send(RemoveFilter{Index: idx}) })),
+				masc.Text("✕"),
+			),
+		))
+	}
+	return pills
+}
+
+func (p *Program) renderBoard(send func(masc.Msg)) masc.ComponentOrHTML {
+	columns := p.config.Columns
+	if len(columns) == 0 {
+		columns = defaultColumns()
+	}
+
+	columnNodes := make([]masc.ComponentOrHTML, 0, len(columns))
+	for _, column := range columns {
+		tasks := p.filteredTasks(column.ID)
+		children := make([]masc.MarkupOrChild, 0, len(tasks)+2)
+		children = append(children,
+			masc.Markup(masc.Class("task-list")),
+		)
+		if len(tasks) == 0 {
+			children = append(children, elem.Div(masc.Markup(masc.Class("empty-state")), masc.Text("No tasks")))
+		} else {
+			for _, task := range tasks {
+				children = append(children, p.renderTaskCard(task, send))
+			}
+		}
+
+		columnNodes = append(columnNodes,
+			elem.Div(
+				masc.Markup(masc.Class("kanban-column")),
+				elem.Div(
+					masc.Markup(masc.Class("column-header")),
+					elem.Div(masc.Markup(masc.Class("column-title")), masc.Text(column.Name)),
+					elem.Div(masc.Markup(masc.Class("column-count")), masc.Text(fmt.Sprintf("%d", len(tasks)))),
+				),
+				elem.Div(children...),
+			),
+		)
+	}
+
+	return elem.Div(
+		append([]masc.MarkupOrChild{masc.Markup(masc.Class("kanban-board"))}, toMarkupChildren(columnNodes)...)...,
+	)
+}
+
+func (p *Program) renderTaskCard(task Task, send func(masc.Msg)) masc.ComponentOrHTML {
+	progress := ""
+	percent := 0
+	if len(task.Subtasks) > 0 {
+		completed := 0
+		for _, st := range task.Subtasks {
+			if st.Completed {
+				completed++
+			}
+		}
+		percent = int(float64(completed) / float64(len(task.Subtasks)) * 100)
+		progress = fmt.Sprintf("%d/%d", completed, len(task.Subtasks))
+	}
+
+	return elem.Div(
+		masc.Markup(masc.Class("task-card")),
+		elem.Div(
+			masc.Markup(masc.Class("task-header")),
+			elem.Div(masc.Markup(masc.Class("task-id")), masc.Text(task.ID)),
+			elem.Div(
+				masc.Markup(masc.Class("task-actions")),
+				elem.Button(
+					masc.Markup(masc.Class("btn", "btn-ghost"), event.Click(func(e *masc.Event) {
+						send(MoveTaskPosition{TaskID: task.ID, Direction: -1})
+					})),
+					masc.Text("⬆️"),
+				),
+				elem.Button(
+					masc.Markup(masc.Class("btn", "btn-ghost"), event.Click(func(e *masc.Event) {
+						send(MoveTaskPosition{TaskID: task.ID, Direction: 1})
+					})),
+					masc.Text("⬇️"),
+				),
+				elem.Button(
+					masc.Markup(masc.Class("btn", "btn-ghost"), event.Click(func(e *masc.Event) {
+						send(OpenModal{Mode: ModalDetail, TaskID: task.ID})
+					})),
+					masc.Text("👁️"),
+				),
+				elem.Button(
+					masc.Markup(masc.Class("btn", "btn-ghost"), event.Click(func(e *masc.Event) {
+						send(OpenModal{Mode: ModalEdit, TaskID: task.ID})
+					})),
+					masc.Text("✏️"),
+				),
+			),
+		),
+		elem.Div(masc.Markup(masc.Class("task-title")), masc.Text(task.Title)),
+		masc.If(task.Description != "", elem.Div(masc.Markup(masc.Class("task-description")), masc.Text(task.Description))),
+		elem.Div(
+			append([]masc.MarkupOrChild{masc.Markup(masc.Class("task-meta"))},
+				toMarkupChildren(p.taskMetaItems(task))...,
+			)...,
+		),
+		masc.If(task.Modified != "", elem.Div(masc.Markup(masc.Class("task-modified")), masc.Text("Modified: "+task.Modified))),
+		masc.If(progress != "", elem.Div(
+			masc.Markup(masc.Class("task-subtasks")),
+			elem.Div(
+				masc.Markup(masc.Class("subtask-progress")),
+				elem.Div(
+					masc.Markup(masc.Class("progress-bar")),
+					elem.Div(masc.Markup(masc.Class("progress-fill"), masc.Style("width", fmt.Sprintf("%d%%", percent))), masc.Text("")),
+				),
+				elem.Span(masc.Text(progress)),
+			),
+		)),
+	)
+}
+
+func (p *Program) taskMetaItems(task Task) []masc.ComponentOrHTML {
+	items := make([]masc.ComponentOrHTML, 0, 1+len(task.Assignees)+len(task.Tags))
+	if task.Category != "" {
+		items = append(items, elem.Span(masc.Markup(masc.Class("badge", "badge-category")), masc.Text(task.Category)))
+	}
+	items = append(items, p.renderTaskAssignees(task)...)
+	items = append(items, p.renderTaskTags(task)...)
+	return items
+}
+
+func (p *Program) renderTaskAssignees(task Task) []masc.ComponentOrHTML {
+	items := make([]masc.ComponentOrHTML, 0, len(task.Assignees))
+	for _, assignee := range task.Assignees {
+		items = append(items, elem.Span(masc.Markup(masc.Class("badge", "badge-assignee")), masc.Text(assignee)))
+	}
+	return items
+}
+
+func (p *Program) renderTaskTags(task Task) []masc.ComponentOrHTML {
+	items := make([]masc.ComponentOrHTML, 0, len(task.Tags))
+	for _, tag := range task.Tags {
+		items = append(items, elem.Span(masc.Markup(masc.Class("tag")), masc.Text(tag)))
+	}
+	return items
+}
+
+func (p *Program) renderModal(send func(masc.Msg)) masc.ComponentOrHTML {
+	if p.modal == ModalNone {
+		return nil
+	}
+
+	switch p.modal {
+	case ModalDetail:
+		return p.renderDetailModal(send)
+	case ModalEdit:
+		return p.renderEditModal(send)
+	case ModalArchive:
+		return p.renderArchiveModal(send)
+	case ModalColumns:
+		return p.renderColumnsModal(send)
+	}
+	return nil
+}
+
+func (p *Program) renderDetailModal(send func(masc.Msg)) masc.ComponentOrHTML {
+	task, ok := p.taskByID(p.detailTaskID)
+	if !ok {
+		return nil
+	}
+
+	return elem.Div(
+		masc.Markup(masc.Class("modal", "active")),
+		elem.Div(
+			masc.Markup(masc.Class("modal-content")),
+			elem.Div(
+				masc.Markup(masc.Class("modal-header")),
+				elem.Heading2(masc.Text(task.Title)),
+				elem.Button(
+					masc.Markup(masc.Class("close-btn"), event.Click(func(e *masc.Event) { send(CloseModal{Mode: ModalDetail}) })),
+					masc.Text("×"),
+				),
+			),
+			elem.Div(
+				masc.Markup(masc.Class("task-detail")),
+				elem.Div(
+					masc.Markup(masc.Class("summary-card")),
+					elem.Div(masc.Text("Status: "+p.statusName(task.Status))),
+					masc.If(task.Category != "", elem.Div(masc.Text("Category: "+task.Category))),
+					masc.If(len(task.Assignees) > 0, elem.Div(masc.Text("Assigned: "+strings.Join(task.Assignees, ", ")))),
+					masc.If(task.Created != "", elem.Div(masc.Text("Created: "+task.Created))),
+					masc.If(task.Modified != "", elem.Div(masc.Text("Modified: "+task.Modified))),
+					masc.If(task.Completed != "", elem.Div(masc.Text("Finished: "+task.Completed))),
+				),
+				masc.If(len(task.Tags) > 0, elem.Div(
+					masc.Markup(masc.Class("summary-card")),
+					elem.Div(masc.Text("Tags")),
+					elem.Div(toMarkupChildren(p.renderTaskTags(task))...),
+				)),
+					masc.If(task.Description != "", elem.Div(
+						masc.Markup(masc.Class("summary-card")),
+						elem.Div(masc.Text("Description")),
+						elem.Div(masc.Markup(masc.Style("white-space", "pre-wrap")), masc.Text(task.Description)),
+					)),
+					masc.If(len(task.Subtasks) > 0, elem.Div(
+						masc.Markup(masc.Class("summary-card")),
+						elem.Div(masc.Text("Subtasks")),
+						elem.Div(toMarkupChildren(p.renderSubtaskList(task.Subtasks))...),
+					)),
+					masc.If(task.Notes != "", elem.Div(
+						masc.Markup(masc.Class("summary-card")),
+						elem.Div(masc.Text("Notes")),
+						elem.Div(masc.Markup(masc.Style("white-space", "pre-wrap")), masc.Text(task.Notes)),
+					)),
+				),
+			elem.Div(
+				masc.Markup(masc.Class("actions")),
+				elem.Button(
+					masc.Markup(masc.Class("btn", "btn-secondary"), event.Click(func(e *masc.Event) { send(CloseModal{Mode: ModalDetail}) })),
+					masc.Text("Close"),
+				),
+				elem.Button(
+					masc.Markup(masc.Class("btn", "btn-danger"), event.Click(func(e *masc.Event) { send(DeleteTask{TaskID: task.ID}) })),
+					masc.Text("🗑️ Delete"),
+				),
+				elem.Button(
+					masc.Markup(masc.Class("btn", "btn-secondary"), event.Click(func(e *masc.Event) { send(ArchiveTask{TaskID: task.ID}) })),
+					masc.Text("📦 Archive"),
+				),
+				elem.Button(
+					masc.Markup(masc.Class("btn", "btn-primary"), event.Click(func(e *masc.Event) { send(OpenModal{Mode: ModalEdit, TaskID: task.ID}) })),
+					masc.Text("✏️ Edit"),
+				),
+			),
+		),
+	)
+}
+
+func (p *Program) renderSubtaskList(subtasks []Subtask) []masc.ComponentOrHTML {
+	items := make([]masc.ComponentOrHTML, 0, len(subtasks))
+	for _, st := range subtasks {
+		suffix := ""
+		if st.DueDate != "" {
+			suffix = " (due " + st.DueDate + ")"
+		}
+		label := "[ ] " + st.Text + suffix
+		if st.Completed {
+			label = "[x] " + st.Text + suffix
+		}
+		items = append(items, elem.Div(masc.Text(label)))
+	}
+	return items
+}
+
+func (p *Program) renderEditModal(send func(masc.Msg)) masc.ComponentOrHTML {
+	form := p.form
+	isEdit := form.ID != ""
+
+	statusOptions := make([]masc.ComponentOrHTML, 0, len(p.config.Columns))
+	for _, col := range p.config.Columns {
+		statusOptions = append(statusOptions, elem.Option(
+			masc.Markup(masc.Property("value", col.ID), masc.MarkupIf(col.ID == form.Status, masc.Property("selected", true))),
+			masc.Text(col.Name),
+		))
+	}
+
+	subtaskItems := make([]masc.ComponentOrHTML, 0, len(form.Subtasks))
+	for idx, st := range form.Subtasks {
+		index := idx
+		subtaskItems = append(subtaskItems, elem.Div(
+			masc.Markup(masc.Class("form-group")),
+			elem.Div(
+				masc.Markup(masc.Style("display", "flex"), masc.Style("gap", "0.5rem"), masc.Style("align-items", "center")),
+				elem.Input(masc.Markup(
+					masc.Property("type", "checkbox"),
+					masc.MarkupIf(st.Completed, masc.Property("checked", true)),
+					event.Change(func(e *masc.Event) { send(ToggleFormSubtask{Index: index}) }),
+				)),
+				elem.Input(masc.Markup(
+					masc.Property("type", "text"),
+					masc.Property("value", st.Text),
+					event.Input(func(e *masc.Event) { send(UpdateFormSubtaskText{Index: index, Value: e.Target.Get("value").String()}) }),
+				)),
+				elem.Input(masc.Markup(
+					masc.Property("type", "date"),
+					masc.Property("value", st.DueDate),
+					event.Input(func(e *masc.Event) { send(UpdateFormSubtaskDueDate{Index: index, Value: e.Target.Get("value").String()}) }),
+				)),
+				elem.Button(masc.Markup(masc.Class("btn", "btn-ghost"), event.Click(func(e *masc.Event) { send(DeleteFormSubtask{Index: index}) })), masc.Text("🗑️")),
+			),
+		))
+	}
+
+	subtaskChildren := make([]masc.MarkupOrChild, 0, len(subtaskItems)+3)
+	subtaskChildren = append(subtaskChildren, masc.Markup(masc.Class("form-group")), elem.Label(masc.Text("Subtasks")))
+	subtaskChildren = append(subtaskChildren, toMarkupChildren(subtaskItems)...)
+	subtaskChildren = append(subtaskChildren,
+		elem.Div(
+			masc.Markup(masc.Style("display", "flex"), masc.Style("gap", "0.5rem"), masc.Style("align-items", "center")),
+			elem.Input(masc.Markup(
+				masc.Property("type", "text"),
+				masc.Property("placeholder", "New subtask"),
+				masc.Property("value", p.newSubtaskText),
+				event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "new_subtask_text", Value: e.Target.Get("value").String()}) }),
+			)),
+			elem.Input(masc.Markup(
+				masc.Property("type", "date"),
+				masc.Property("value", p.newSubtaskDue),
+				event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "new_subtask_due", Value: e.Target.Get("value").String()}) }),
+			)),
+			elem.Button(
+				masc.Markup(masc.Class("btn", "btn-secondary"), event.Click(func(e *masc.Event) {
+					if strings.TrimSpace(p.newSubtaskText) == "" {
+						return
+					}
+					send(AddFormSubtask{Text: p.newSubtaskText, DueDate: p.newSubtaskDue})
+				})),
+				masc.Text("+ Add"),
+			),
+		),
+	)
+
+	return elem.Div(
+		masc.Markup(masc.Class("modal", "active")),
+		elem.Div(
+			masc.Markup(masc.Class("modal-content")),
+			elem.Div(
+				masc.Markup(masc.Class("modal-header")),
+				elem.Heading2(masc.Text(func() string {
+					if isEdit {
+						return "Edit Task"
+					}
+					return "New Task"
+				}())),
+				elem.Button(
+					masc.Markup(masc.Class("close-btn"), event.Click(func(e *masc.Event) { send(CloseModal{Mode: ModalEdit}) })),
+					masc.Text("×"),
+				),
+			),
+			elem.Form(
+				masc.Markup(event.Submit(func(e *masc.Event) { send(SaveTask{}) }).PreventDefault()),
+				elem.Div(
+					masc.Markup(masc.Class("form-group")),
+					elem.Label(masc.Text("Title *")),
+					elem.Input(masc.Markup(
+						masc.Property("type", "text"),
+						masc.Property("value", form.Title),
+						event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "title", Value: e.Target.Get("value").String()}) }),
+					)),
+				),
+				elem.Div(
+					masc.Markup(masc.Class("form-group")),
+					elem.Label(masc.Text("Column *")),
+					elem.Select(
+						append([]masc.MarkupOrChild{
+							masc.Markup(event.Change(func(e *masc.Event) { send(UpdateFormField{Field: "status", Value: e.Target.Get("value").String()}) })),
+						}, toMarkupChildren(statusOptions)...)...,
+					),
+				),
+				elem.Div(
+					masc.Markup(masc.Class("form-group")),
+					elem.Label(masc.Text("Category")),
+					elem.Input(masc.Markup(
+						masc.Property("type", "text"),
+						masc.Property("value", form.Category),
+						event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "category", Value: e.Target.Get("value").String()}) }),
+					)),
+				),
+				elem.Div(
+					masc.Markup(masc.Class("form-group")),
+					elem.Label(masc.Text("Assignees")),
+					elem.Input(masc.Markup(
+						masc.Property("type", "text"),
+						masc.Property("value", form.Assignees),
+						event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "assignees", Value: e.Target.Get("value").String()}) }),
+					)),
+				),
+				elem.Div(
+					masc.Markup(masc.Class("form-group")),
+					elem.Label(masc.Text("Tags")),
+					elem.Input(masc.Markup(
+						masc.Property("type", "text"),
+						masc.Property("value", form.Tags),
+						event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "tags", Value: e.Target.Get("value").String()}) }),
+					)),
+				),
+				elem.Div(
+					masc.Markup(masc.Class("form-group")),
+					elem.Label(masc.Text("Created")),
+					elem.Input(masc.Markup(
+						masc.Property("type", "date"),
+						masc.Property("value", form.Created),
+						event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "created", Value: e.Target.Get("value").String()}) }),
+					)),
+				),
+				elem.Div(
+					masc.Markup(masc.Class("form-group")),
+					elem.Label(masc.Text("Completed")),
+					elem.Input(masc.Markup(
+						masc.Property("type", "date"),
+						masc.Property("value", form.Completed),
+						event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "completed", Value: e.Target.Get("value").String()}) }),
+					)),
+				),
+				elem.Div(
+					masc.Markup(masc.Class("form-group")),
+					elem.Label(masc.Text("Description")),
+					elem.TextArea(masc.Markup(
+						masc.Property("value", form.Description),
+						event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "description", Value: e.Target.Get("value").String()}) }),
+					)),
+				),
+				elem.Div(
+					masc.Markup(masc.Class("form-group")),
+					elem.Label(masc.Text("Notes")),
+					elem.TextArea(masc.Markup(
+						masc.Property("value", form.Notes),
+						event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "notes", Value: e.Target.Get("value").String()}) }),
+					)),
+				),
+				elem.Div(subtaskChildren...),
+				elem.Div(
+					masc.Markup(masc.Class("actions")),
+					elem.Button(
+						masc.Markup(masc.Class("btn", "btn-secondary"), masc.Property("type", "button"), event.Click(func(e *masc.Event) { send(CloseModal{Mode: ModalEdit}) })),
+						masc.Text("Cancel"),
+					),
+					elem.Button(
+						masc.Markup(masc.Class("btn", "btn-primary"), masc.Property("type", "submit")),
+						masc.Text(func() string {
+							if isEdit {
+								return "Save"
+							}
+							return "Create"
+						}()),
+					),
+				),
+			),
+		),
+	)
+}
+
+func (p *Program) renderArchiveModal(send func(masc.Msg)) masc.ComponentOrHTML {
+	search := strings.TrimSpace(p.archiveSearch)
+	filtered := make([]Task, 0, len(p.archived))
+	for _, task := range p.archived {
+		if search == "" || strings.Contains(strings.ToLower(task.Title), strings.ToLower(search)) || strings.Contains(strings.ToLower(task.Description), strings.ToLower(search)) {
+			filtered = append(filtered, task)
+		}
+	}
+
+	items := make([]masc.ComponentOrHTML, 0, len(filtered))
+	for _, task := range filtered {
+		items = append(items, elem.Div(
+			masc.Markup(masc.Class("summary-card")),
+			elem.Div(
+				masc.Markup(masc.Style("display", "flex"), masc.Style("justify-content", "space-between"), masc.Style("align-items", "center")),
+				elem.Div(masc.Text(task.ID+" | "+task.Title)),
+				elem.Div(
+					elem.Button(masc.Markup(masc.Class("btn", "btn-danger"), event.Click(func(e *masc.Event) { send(DeleteTask{TaskID: task.ID}) })), masc.Text("🗑️")),
+					elem.Button(masc.Markup(masc.Class("btn", "btn-primary"), event.Click(func(e *masc.Event) { send(RestoreTask{TaskID: task.ID}) })), masc.Text("↩️ Restore")),
+				),
+			),
+		))
+	}
+
+	if len(items) == 0 {
+		items = append(items, elem.Div(masc.Markup(masc.Class("empty-state")), masc.Text("No archived tasks.")))
+	}
+
+	archiveContent := make([]masc.MarkupOrChild, 0, len(items)+3)
+	archiveContent = append(archiveContent,
+		masc.Markup(masc.Class("modal-content")),
+		elem.Div(
+			masc.Markup(masc.Class("modal-header")),
+			elem.Heading2(masc.Text("Archives")),
+			elem.Button(
+				masc.Markup(masc.Class("close-btn"), event.Click(func(e *masc.Event) { send(CloseModal{Mode: ModalArchive}) })),
+				masc.Text("×"),
+			),
+		),
+		elem.Div(
+			masc.Markup(masc.Class("form-group")),
+			elem.Input(masc.Markup(
+				masc.Property("type", "text"),
+				masc.Property("placeholder", "Search archives"),
+				masc.Property("value", p.archiveSearch),
+				event.Input(func(e *masc.Event) { send(UpdateArchiveSearch{Value: e.Target.Get("value").String()}) }),
+			)),
+		),
+	)
+	archiveContent = append(archiveContent, toMarkupChildren(items)...)
+
+	return elem.Div(
+		masc.Markup(masc.Class("modal", "active")),
+		elem.Div(archiveContent...),
+	)
+}
+
+func (p *Program) renderColumnsModal(send func(masc.Msg)) masc.ComponentOrHTML {
+	items := make([]masc.ComponentOrHTML, 0, len(p.config.Columns))
+	for idx, col := range p.config.Columns {
+		index := idx
+		items = append(items, elem.Div(
+			masc.Markup(masc.Class("summary-card")),
+			elem.Div(
+				masc.Markup(masc.Style("display", "grid"), masc.Style("gap", "0.5rem"), masc.Style("grid-template-columns", "auto 1fr 1fr auto"), masc.Style("align-items", "center")),
+				elem.Div(
+					elem.Button(masc.Markup(masc.Class("btn", "btn-secondary"), event.Click(func(e *masc.Event) { send(MoveColumn{Index: index, Direction: -1}) })), masc.Text("↑")),
+					elem.Button(masc.Markup(masc.Class("btn", "btn-secondary"), event.Click(func(e *masc.Event) { send(MoveColumn{Index: index, Direction: 1}) })), masc.Text("↓")),
+				),
+				elem.Input(masc.Markup(
+					masc.Property("type", "text"),
+					masc.Property("value", col.Name),
+					event.Input(func(e *masc.Event) { send(UpdateColumn{Index: index, Field: "name", Value: e.Target.Get("value").String()}) }),
+				)),
+				elem.Input(masc.Markup(
+					masc.Property("type", "text"),
+					masc.Property("value", col.ID),
+					event.Input(func(e *masc.Event) { send(UpdateColumn{Index: index, Field: "id", Value: e.Target.Get("value").String()}) }),
+				)),
+				elem.Button(masc.Markup(masc.Class("btn", "btn-danger"), event.Click(func(e *masc.Event) { send(DeleteColumn{Index: index}) })), masc.Text("🗑️")),
+			),
+		))
+	}
+
+	columnsContent := make([]masc.MarkupOrChild, 0, len(items)+3)
+	columnsContent = append(columnsContent,
+		masc.Markup(masc.Class("modal-content")),
+		elem.Div(
+			masc.Markup(masc.Class("modal-header")),
+			elem.Heading2(masc.Text("Manage Columns")),
+			elem.Button(masc.Markup(masc.Class("close-btn"), event.Click(func(e *masc.Event) { send(CloseModal{Mode: ModalColumns}) })), masc.Text("×")),
+		),
+		elem.Div(
+			masc.Markup(masc.Class("actions")),
+			elem.Button(masc.Markup(masc.Class("btn", "btn-secondary"), event.Click(func(e *masc.Event) { send(AddColumn{}) })), masc.Text("+ Add Column")),
+		),
+	)
+	columnsContent = append(columnsContent, toMarkupChildren(items)...)
+
+	return elem.Div(
+		masc.Markup(masc.Class("modal", "active")),
+		elem.Div(columnsContent...),
+	)
+}
+
+func (p *Program) renderError() masc.ComponentOrHTML {
+	return elem.Div(
+		masc.Markup(masc.Class("summary-card"), masc.Style("border-left", "4px solid var(--danger)")),
+		masc.Text(p.error),
+	)
+}
+
+func (p *Program) renderStatus() masc.ComponentOrHTML {
+	return elem.Div(
+		masc.Markup(masc.Class("summary-card")),
+		masc.Text(p.status),
+	)
+}
+
+func (p *Program) renderNotification() masc.ComponentOrHTML {
+	if p.error != "" {
+		return elem.Div(masc.Markup(masc.Class("notification", "error", "show")), masc.Text(p.error))
+	}
+	if p.status != "" {
+		return elem.Div(masc.Markup(masc.Class("notification", "success", "show")), masc.Text(p.status))
+	}
+	return nil
+}
+
+func (p *Program) handleSaveTask() (masc.Model, masc.Cmd) {
+	form := p.form
+	title := strings.TrimSpace(form.Title)
+	status := strings.TrimSpace(form.Status)
+	if title == "" {
+		p.error = "Title is required."
+		return p, nil
+	}
+	if status == "" {
+		p.error = "Column is required."
+		return p, nil
+	}
+	assignees := parseAssignees(form.Assignees)
+	tags := parseTags(form.Tags)
+	today := time.Now().Format("2006-01-02")
+
+	if form.ID != "" {
+		idx := p.taskIndexByID(form.ID)
+		if idx < 0 {
+			p.error = "Task not found."
+			return p, nil
+		}
+		task := p.tasks[idx]
+		task.Title = title
+		task.Status = status
+		task.Category = strings.TrimSpace(form.Category)
+		task.Assignees = assignees
+		task.Tags = tags
+		task.Created = strings.TrimSpace(form.Created)
+		task.Modified = today
+		task.Completed = strings.TrimSpace(form.Completed)
+		task.Description = strings.TrimSpace(form.Description)
+		task.Subtasks = form.Subtasks
+		task.Notes = strings.TrimSpace(form.Notes)
+		p.tasks[idx] = task
+		p.status = "Task updated."
+	} else {
+		newTask := Task{
+			ID:          generateTaskID(),
+			Title:       title,
+			Status:      status,
+			Category:    strings.TrimSpace(form.Category),
+			Assignees:   assignees,
+			Tags:        tags,
+			Created:     firstNonEmpty(strings.TrimSpace(form.Created), today),
+			Modified:    today,
+			Completed:   strings.TrimSpace(form.Completed),
+			Description: strings.TrimSpace(form.Description),
+			Subtasks:    form.Subtasks,
+			Notes:       strings.TrimSpace(form.Notes),
+		}
+		p.tasks = append(p.tasks, newTask)
+		p.status = "Task created."
+	}
+
+	p.dirty = true
+	p.modal = ModalNone
+	p.form = TaskForm{}
+	return p, nil
+}
+
+func (p *Program) deleteTaskByID(taskID string) {
+	idx := p.taskIndexByID(taskID)
+	if idx < 0 {
+		return
+	}
+	p.tasks = append(p.tasks[:idx], p.tasks[idx+1:]...)
+	p.dirty = true
+	p.status = "Task deleted."
+	p.modal = ModalNone
+}
+
+func (p *Program) archiveTask(taskID string) {
+	idx := p.taskIndexByID(taskID)
+	if idx < 0 {
+		return
+	}
+	task := p.tasks[idx]
+	p.tasks = append(p.tasks[:idx], p.tasks[idx+1:]...)
+	p.archived = append(p.archived, task)
+	p.dirty = true
+	p.status = "Task archived."
+	p.modal = ModalNone
+}
+
+func (p *Program) restoreTask(taskID string) {
+	idx := p.archivedIndexByID(taskID)
+	if idx < 0 {
+		return
+	}
+	task := p.archived[idx]
+	p.archived = append(p.archived[:idx], p.archived[idx+1:]...)
+	if !p.columnExists(task.Status) {
+		task.Status = p.firstColumnID()
+	}
+	p.tasks = append(p.tasks, task)
+	p.dirty = true
+	p.status = "Task restored."
+}
+
+func (p *Program) moveTaskWithinColumn(taskID string, direction int) {
+	idx := p.taskIndexByID(taskID)
+	if idx < 0 {
+		return
+	}
+	task := p.tasks[idx]
+	columnIndices := make([]int, 0)
+	for i, t := range p.tasks {
+		if t.Status == task.Status {
+			columnIndices = append(columnIndices, i)
+		}
+	}
+	if len(columnIndices) < 2 {
+		return
+	}
+	currentPos := -1
+	for i, v := range columnIndices {
+		if v == idx {
+			currentPos = i
+			break
+		}
+	}
+	if currentPos == -1 {
+		return
+	}
+	newPos := currentPos + direction
+	if newPos < 0 || newPos >= len(columnIndices) {
+		return
+	}
+	swapIdx := columnIndices[newPos]
+	p.tasks[idx], p.tasks[swapIdx] = p.tasks[swapIdx], p.tasks[idx]
+	p.dirty = true
+}
+
+func (p *Program) addColumn() {
+	p.config.Columns = append(p.config.Columns, Column{Name: "New Column", ID: fmt.Sprintf("column-%d", len(p.config.Columns)+1)})
+	p.dirty = true
+}
+
+func (p *Program) updateColumn(index int, field, value string) {
+	if index < 0 || index >= len(p.config.Columns) {
+		return
+	}
+	switch field {
+	case "name":
+		p.config.Columns[index].Name = value
+	case "id":
+		p.config.Columns[index].ID = value
+	}
+	p.dirty = true
+}
+
+func (p *Program) deleteColumn(index int) {
+	if index < 0 || index >= len(p.config.Columns) {
+		return
+	}
+	p.config.Columns = append(p.config.Columns[:index], p.config.Columns[index+1:]...)
+	p.dirty = true
+}
+
+func (p *Program) moveColumn(index int, direction int) {
+	newIdx := index + direction
+	if newIdx < 0 || newIdx >= len(p.config.Columns) {
+		return
+	}
+	p.config.Columns[index], p.config.Columns[newIdx] = p.config.Columns[newIdx], p.config.Columns[index]
+	p.dirty = true
+}
+
+func (p *Program) formForTask(taskID string) TaskForm {
+	if taskID == "" {
+		form := TaskForm{}
+		if len(p.config.Columns) > 0 {
+			form.Status = p.config.Columns[0].ID
+		}
+		return form
+	}
+	task, ok := p.taskByID(taskID)
+	if !ok {
+		return TaskForm{}
+	}
+	return TaskForm{
+		ID:          task.ID,
+		Title:       task.Title,
+		Status:      task.Status,
+		Category:    task.Category,
+		Assignees:   strings.Join(task.Assignees, ", "),
+		Tags:        strings.Join(task.Tags, " "),
+		Created:     task.Created,
+		Completed:   task.Completed,
+		Description: task.Description,
+		Notes:       task.Notes,
+		Subtasks:    append([]Subtask{}, task.Subtasks...),
+	}
+}
+
+func (p *Program) taskByID(taskID string) (Task, bool) {
+	for _, task := range p.tasks {
+		if task.ID == taskID {
+			return task, true
+		}
+	}
+	return Task{}, false
+}
+
+func (p *Program) taskIndexByID(taskID string) int {
+	for i, task := range p.tasks {
+		if task.ID == taskID {
+			return i
+		}
+	}
+	return -1
+}
+
+func (p *Program) archivedIndexByID(taskID string) int {
+	for i, task := range p.archived {
+		if task.ID == taskID {
+			return i
+		}
+	}
+	return -1
+}
+
+func (p *Program) columnExists(id string) bool {
+	for _, col := range p.config.Columns {
+		if col.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *Program) firstColumnID() string {
+	if len(p.config.Columns) == 0 {
+		return "todo"
+	}
+	return p.config.Columns[0].ID
+}
+
+func (p *Program) statusName(id string) string {
+	for _, col := range p.config.Columns {
+		if col.ID == id {
+			return col.Name
+		}
+	}
+	return id
+}
+
+func (p *Program) filteredTasks(columnID string) []Task {
+	filtered := make([]Task, 0)
+	for _, task := range p.tasks {
+		if task.Status != columnID {
+			continue
+		}
+		if !p.matchesFilters(task) {
+			continue
+		}
+		filtered = append(filtered, task)
+	}
+	return filtered
+}
+
+func (p *Program) matchesFilters(task Task) bool {
+	if len(p.filters) > 0 {
+		byType := map[string][]string{}
+		for _, f := range p.filters {
+			byType[f.Type] = append(byType[f.Type], f.Value)
+		}
+		for ftype, values := range byType {
+			matchesType := false
+			switch ftype {
+			case "tag":
+				for _, value := range values {
+					if hasTag(task.Tags, value) {
+						matchesType = true
+						break
+					}
+				}
+			case "category":
+				for _, value := range values {
+					if task.Category == value {
+						matchesType = true
+						break
+					}
+				}
+			case "user":
+				for _, value := range values {
+					if value == "<unassigned>" {
+						if len(task.Assignees) == 0 {
+							matchesType = true
+							break
+						}
+					} else if hasAssignee(task.Assignees, value) {
+						matchesType = true
+						break
+					}
+				}
+			}
+			if !matchesType {
+				return false
+			}
+		}
+	}
+
+	if strings.TrimSpace(p.search) != "" {
+		search := strings.ToLower(p.search)
+		if !strings.Contains(strings.ToLower(task.Title), search) &&
+			!strings.Contains(strings.ToLower(task.Description), search) &&
+			!strings.Contains(strings.ToLower(task.Notes), search) {
+			return false
+		}
+	}
+	return true
+}
+
+func (p *Program) uniqueValues() ([]string, []string, []string) {
+	categories := append([]string{}, p.config.Categories...)
+	userMap := map[string]string{}
+	for _, user := range p.config.Users {
+		id := normalizeUserID(user)
+		if _, ok := userMap[id]; !ok {
+			userMap[id] = user
+		}
+	}
+	tags := append([]string{}, p.config.Tags...)
+
+	addCategory := func(value string) {
+		if value == "" {
+			return
+		}
+		for _, existing := range categories {
+			if existing == value {
+				return
+			}
+		}
+		categories = append(categories, value)
+	}
+	addTag := func(value string) {
+		value = strings.TrimPrefix(value, "#")
+		if value == "" {
+			return
+		}
+		for _, existing := range tags {
+			if existing == value {
+				return
+			}
+		}
+		tags = append(tags, value)
+	}
+	addUser := func(value string) {
+		id := normalizeUserID(value)
+		if id == "" {
+			return
+		}
+		if _, ok := userMap[id]; !ok {
+			userMap[id] = value
+		}
+	}
+
+	for _, task := range p.tasks {
+		addCategory(task.Category)
+		for _, tag := range task.Tags {
+			addTag(tag)
+		}
+		for _, user := range task.Assignees {
+			addUser(user)
+		}
+	}
+	for _, task := range p.archived {
+		addCategory(task.Category)
+		for _, tag := range task.Tags {
+			addTag(tag)
+		}
+		for _, user := range task.Assignees {
+			addUser(user)
+		}
+	}
+
+	users := make([]string, 0, len(userMap))
+	for _, user := range userMap {
+		users = append(users, user)
+	}
+	sort.Strings(users)
+	return categories, users, tags
+}
+
+func (p *Program) fullUserFormat(userID string) string {
+	for _, user := range p.config.Users {
+		if normalizeUserID(user) == userID {
+			return user
+		}
+	}
+	return userID
+}
+
+func parseKanban(content string) (BoardConfig, []Task) {
+	config := BoardConfig{}
+
+	configSection := regexp.MustCompile(`(?s)## ⚙️ Configuration\s+(.+?)---`).FindStringSubmatch(content)
+	if len(configSection) > 1 {
+		configText := configSection[1]
+		if match := regexp.MustCompile(`\*\*Columns\*\*:\s*(.+)`).FindStringSubmatch(configText); len(match) > 1 {
+			columns := strings.Split(match[1], "|")
+			for _, col := range columns {
+				parts := regexp.MustCompile(`(.+?)\s*\((.+?)\)`).FindStringSubmatch(strings.TrimSpace(col))
+				if len(parts) == 3 {
+					config.Columns = append(config.Columns, Column{Name: strings.TrimSpace(parts[1]), ID: strings.TrimSpace(parts[2])})
+				}
+			}
+		}
+		if match := regexp.MustCompile(`\*\*Categories\*\*:\s*(.+)`).FindStringSubmatch(configText); len(match) > 1 {
+			config.Categories = splitCSV(match[1])
+		}
+		if match := regexp.MustCompile(`\*\*Users\*\*:\s*(.+)`).FindStringSubmatch(configText); len(match) > 1 {
+			config.Users = splitCSV(match[1])
+		}
+		if match := regexp.MustCompile(`\*\*Tags\*\*:\s*(.+)`).FindStringSubmatch(configText); len(match) > 1 {
+			for _, tag := range strings.Fields(match[1]) {
+				if strings.HasPrefix(tag, "#") {
+					config.Tags = append(config.Tags, strings.TrimPrefix(tag, "#"))
+				}
+			}
+		}
+	}
+
+	if len(config.Columns) == 0 {
+		config.Columns = defaultColumns()
+	}
+	if len(config.Categories) == 0 {
+		config.Categories = []string{"Frontend", "Backend", "Design", "DevOps", "Tests", "Documentation"}
+	}
+	if len(config.Users) == 0 {
+		config.Users = []string{"@user (User)"}
+	}
+	if len(config.Tags) == 0 {
+		config.Tags = []string{"bug", "feature", "ui", "backend", "urgent", "refactor", "docs", "test"}
+	}
+
+	tasks := make([]Task, 0)
+	for _, column := range config.Columns {
+		tasks = append(tasks, parseTasksFromSection(content, column.Name, column.ID)...)
+	}
+	return config, tasks
+}
+
+func parseArchive(content string) []Task {
+	return parseTasksFromSection(content, "✅ Archives", "archived")
+}
+
+func parseTasksFromSection(content, sectionName, statusID string) []Task {
+	sections := regexp.MustCompile(`\n##\s+`).Split(content, -1)
+	var sectionContent string
+	for _, section := range sections {
+		if strings.HasPrefix(section, sectionName) {
+			sectionContent = strings.TrimSpace(strings.TrimPrefix(section, sectionName))
+			break
+		}
+	}
+	if sectionContent == "" {
+		return nil
+	}
+
+	blocks := regexp.MustCompile(`(?m)^###\s+TASK-`).Split(sectionContent, -1)
+	if len(blocks) <= 1 {
+		return nil
+	}
+
+	tasks := make([]Task, 0)
+	for _, block := range blocks[1:] {
+		lines := strings.Split(block, "\n")
+		first := strings.TrimSpace(lines[0])
+		pipe := strings.Index(first, "|")
+		if pipe <= 0 {
+			continue
+		}
+		idPart := strings.TrimSpace(first[:pipe])
+		titlePart := strings.TrimSpace(first[pipe+1:])
+		if !regexp.MustCompile(`^[a-zA-Z0-9]+$`).MatchString(idPart) {
+			continue
+		}
+		if titlePart == "" {
+			continue
+		}
+		taskContent := strings.Join(lines[1:], "\n")
+		task := parseTask("TASK-"+idPart, titlePart, taskContent, statusID)
+		tasks = append(tasks, task)
+	}
+	return tasks
+}
+
+func parseTask(id, title, content, status string) Task {
+	task := Task{
+		ID:        id,
+		Title:     strings.TrimSpace(title),
+		Status:    status,
+		Assignees: []string{},
+		Tags:      []string{},
+		Subtasks:  []Subtask{},
+	}
+
+	metaRe := regexp.MustCompile(`(?m)^\*\*Category\*\*:\s*([^|]+?)(?:\s*\|\s*\*\*Assigned\*\*:\s*(.+?))?$`)
+	meta := metaRe.FindStringSubmatch(content)
+	if len(meta) == 0 {
+		meta = regexp.MustCompile(`(?m)^\*\*Priority\*\*:\s*\w+\s*\|\s*\*\*Category\*\*:\s*([^|]+?)(?:\s*\|\s*\*\*Assigned\*\*:\s*(.+?))?$`).FindStringSubmatch(content)
+	}
+	if len(meta) > 1 {
+		task.Category = strings.TrimSpace(meta[1])
+		if len(meta) > 2 && strings.TrimSpace(meta[2]) != "" {
+			for _, assignee := range strings.Split(meta[2], ",") {
+				trimmed := strings.TrimSpace(assignee)
+				if trimmed != "" {
+					task.Assignees = append(task.Assignees, trimmed)
+				}
+			}
+		}
+	}
+
+	if match := regexp.MustCompile(`\*\*Created\*\*:\s*([\d-]+)`).FindStringSubmatch(content); len(match) > 1 {
+		task.Created = match[1]
+	}
+	if match := regexp.MustCompile(`\*\*Modified\*\*:\s*([\d-]+)`).FindStringSubmatch(content); len(match) > 1 {
+		task.Modified = match[1]
+	}
+	if match := regexp.MustCompile(`\*\*Finished\*\*:\s*([\d-]+)`).FindStringSubmatch(content); len(match) > 1 {
+		task.Completed = match[1]
+	}
+	if match := regexp.MustCompile(`\*\*Tags\*\*:\s*(.+)`).FindStringSubmatch(content); len(match) > 1 {
+		for _, tag := range regexp.MustCompile(`#[-\w]+`).FindAllString(match[1], -1) {
+			task.Tags = append(task.Tags, tag)
+		}
+	}
+
+	lines := strings.Split(content, "\n")
+	descLines := []string{}
+	inDesc := false
+	metaLine := regexp.MustCompile(`^\*\*(Priority|Category|Assigned|Created|Modified|Finished|Tags)\*\*`)
+	sectionLine := regexp.MustCompile(`^\*\*(Subtasks|Notes|Links|Review|Dependencies)\*\*`)
+	for _, line := range lines {
+		if metaLine.MatchString(line) {
+			continue
+		}
+		if sectionLine.MatchString(line) {
+			break
+		}
+		if !inDesc {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			inDesc = true
+		}
+		if inDesc {
+			descLines = append(descLines, line)
+		}
+	}
+	task.Description = strings.TrimRight(strings.Join(descLines, "\n"), " \n")
+
+	for _, match := range regexp.MustCompile(`(?m)^- \[(x| )\] (.+?)(?: \(due (\d{4}-\d{2}-\d{2})\))?\s*$`).FindAllStringSubmatch(content, -1) {
+		completed := match[1] == "x"
+		text := strings.TrimSpace(match[2])
+		due := ""
+		if len(match) > 3 {
+			due = normalizeDueDate(match[3])
+		}
+		task.Subtasks = append(task.Subtasks, Subtask{Completed: completed, Text: text, DueDate: due})
+	}
+
+	if idx := strings.Index(content, "**Notes**:"); idx >= 0 {
+		after := strings.TrimLeft(content[idx+len("**Notes**:"):], " \n")
+		task.Notes = strings.TrimRight(after, "\n")
+	}
+
+	return task
+}
+
+func (p *Program) generateKanbanMarkdown() string {
+	config := p.config
+	if len(config.Columns) == 0 {
+		config.Columns = defaultColumns()
+	}
+
+	categories := append([]string{}, config.Categories...)
+	users := append([]string{}, config.Users...)
+	tags := append([]string{}, config.Tags...)
+
+	addUnique := func(slice []string, value string) []string {
+		for _, existing := range slice {
+			if existing == value {
+				return slice
+			}
+		}
+		return append(slice, value)
+	}
+
+	for _, task := range p.tasks {
+		if task.Category != "" {
+			categories = addUnique(categories, task.Category)
+		}
+		for _, user := range task.Assignees {
+			if user != "" {
+				users = addUnique(users, user)
+			}
+		}
+		for _, tag := range task.Tags {
+			clean := strings.TrimPrefix(tag, "#")
+			if clean != "" {
+				tags = addUnique(tags, clean)
+			}
+		}
+	}
+
+	if len(categories) == 0 {
+		categories = []string{"Frontend", "Backend", "Design", "DevOps", "Tests", "Documentation"}
+	}
+	if len(users) == 0 {
+		users = []string{"@user (User)"}
+	}
+	if len(tags) == 0 {
+		tags = []string{"bug", "feature", "ui", "backend", "urgent", "refactor", "docs", "test"}
+	}
+
+	var sb strings.Builder
+	sb.WriteString("# Kanban Board\n\n")
+	sb.WriteString("## ⚙️ Configuration\n\n")
+	sb.WriteString("**Columns**: ")
+	for i, col := range config.Columns {
+		if i > 0 {
+			sb.WriteString(" | ")
+		}
+		sb.WriteString(col.Name + " (" + col.ID + ")")
+	}
+	sb.WriteString("\n\n")
+	sb.WriteString("**Categories**: " + strings.Join(categories, ", ") + "\n\n")
+	sb.WriteString("**Users**: " + strings.Join(users, ", ") + "\n\n")
+	sb.WriteString("**Tags**: " + joinTags(tags) + "\n\n")
+	sb.WriteString("---\n\n")
+
+	for _, col := range config.Columns {
+		sb.WriteString("## " + col.Name + "\n\n")
+		for _, task := range p.tasks {
+			if task.Status != col.ID {
+				continue
+			}
+			sb.WriteString("### " + task.ID + " | " + task.Title + "\n")
+			meta := ""
+			if task.Category != "" {
+				meta += "**Category**: " + task.Category
+			}
+			if len(task.Assignees) > 0 {
+				if meta != "" {
+					meta += " | "
+				}
+				meta += "**Assigned**: " + strings.Join(task.Assignees, ", ")
+			}
+			if meta != "" {
+				sb.WriteString(meta + "\n")
+			}
+			dates := ""
+			if task.Created != "" {
+				dates += "**Created**: " + task.Created
+			}
+			if task.Modified != "" {
+				if dates != "" {
+					dates += " | "
+				}
+				dates += "**Modified**: " + task.Modified
+			}
+			if task.Completed != "" {
+				if dates != "" {
+					dates += " | "
+				}
+				dates += "**Finished**: " + task.Completed
+			}
+			if dates != "" {
+				sb.WriteString(dates + "\n")
+			}
+			if len(task.Tags) > 0 {
+				sb.WriteString("**Tags**: " + strings.Join(task.Tags, " ") + "\n")
+			}
+			if task.Description != "" {
+				sb.WriteString("\n" + task.Description + "\n")
+			}
+			if len(task.Subtasks) > 0 {
+				sb.WriteString("\n**Subtasks**:\n")
+				for _, st := range task.Subtasks {
+					due := ""
+					if st.DueDate != "" {
+						due = " (due " + st.DueDate + ")"
+					}
+					check := " "
+					if st.Completed {
+						check = "x"
+					}
+					sb.WriteString(fmt.Sprintf("- [%s] %s%s\n", check, st.Text, due))
+				}
+			}
+			if task.Notes != "" {
+				sb.WriteString("\n**Notes**:\n" + task.Notes + "\n")
+			}
+			sb.WriteString("\n")
+		}
+	}
+
+	return sb.String()
+}
+
+func (p *Program) generateArchiveMarkdown() string {
+	var sb strings.Builder
+	sb.WriteString("# Task Archive\n\n")
+	sb.WriteString("> Archived tasks\n\n")
+	sb.WriteString("## ✅ Archives\n\n")
+	for _, task := range p.archived {
+		sb.WriteString("### " + task.ID + " | " + task.Title + "\n")
+		meta := ""
+		if task.Category != "" {
+			meta += "**Category**: " + task.Category
+		}
+		if len(task.Assignees) > 0 {
+			if meta != "" {
+				meta += " | "
+			}
+			meta += "**Assigned**: " + strings.Join(task.Assignees, ", ")
+		}
+		if meta != "" {
+			sb.WriteString(meta + "\n")
+		}
+		dates := ""
+		if task.Created != "" {
+			dates += "**Created**: " + task.Created
+		}
+		if task.Modified != "" {
+			if dates != "" {
+				dates += " | "
+			}
+			dates += "**Modified**: " + task.Modified
+		}
+		if task.Completed != "" {
+			if dates != "" {
+				dates += " | "
+			}
+			dates += "**Finished**: " + task.Completed
+		}
+		if dates != "" {
+			sb.WriteString(dates + "\n")
+		}
+		if len(task.Tags) > 0 {
+			sb.WriteString("**Tags**: " + strings.Join(task.Tags, " ") + "\n")
+		}
+		if task.Description != "" {
+			sb.WriteString("\n" + task.Description + "\n")
+		}
+		if len(task.Subtasks) > 0 {
+			sb.WriteString("\n**Subtasks**:\n")
+			for _, st := range task.Subtasks {
+				due := ""
+				if st.DueDate != "" {
+					due = " (due " + st.DueDate + ")"
+				}
+				check := " "
+				if st.Completed {
+					check = "x"
+				}
+				sb.WriteString(fmt.Sprintf("- [%s] %s%s\n", check, st.Text, due))
+			}
+		}
+		if task.Notes != "" {
+			sb.WriteString("\n**Notes**:\n" + task.Notes + "\n")
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
+func defaultColumns() []Column {
+	return []Column{
+		{Name: "📝 To Do", ID: "todo"},
+		{Name: "🚀 In Progress", ID: "in-progress"},
+		{Name: "👀 In Review", ID: "in-review"},
+		{Name: "✅ Done", ID: "done"},
+	}
+}
+
+func createDefaultKanbanContent() string {
+	return "# Kanban Board\n\n## ⚙️ Configuration\n\n**Columns**: 📝 To Do (todo) | 🚀 In Progress (in-progress) | 👀 In Review (in-review) | ✅ Done (done)\n\n**Categories**: Frontend, Backend, Design, DevOps, Tests, Documentation\n\n**Users**: @user (User)\n\n**Tags**: #bug #feature #ui #backend #urgent #refactor #docs #test\n\n---\n\n## 📝 To Do\n\n## 🚀 In Progress\n\n## 👀 In Review\n\n## ✅ Done\n"
+}
+
+func createDefaultArchiveContent() string {
+	return "# Task Archive\n\n> Archived tasks\n\n## ✅ Archives\n\n"
+}
+
+func splitRepo(value string) (string, string, string, error) {
+	trimmed := strings.TrimSpace(value)
+	trimmed = strings.TrimPrefix(trimmed, "https://github.com/")
+	trimmed = strings.TrimPrefix(trimmed, "http://github.com/")
+	trimmed = strings.TrimPrefix(trimmed, "github.com/")
+	parts := strings.Split(trimmed, "/")
+	if len(parts) < 2 {
+		return "", "", "", fmt.Errorf("invalid repo format (expected owner/name)")
+	}
+	owner := strings.TrimSpace(parts[0])
+	name := strings.TrimSpace(parts[1])
+	if owner == "" || name == "" {
+		return "", "", "", fmt.Errorf("invalid repo format (expected owner/name)")
+	}
+	return owner, name, owner + "/" + name, nil
+}
+
+func generateTaskID() string {
+	ts := strings.ToUpper(strconvBase36(time.Now().UnixMilli()))
+	randPart := strings.ToUpper(strconvBase36(int64(idRand.Intn(1296))))
+	if len(randPart) == 1 {
+		randPart = "0" + randPart
+	}
+	return "TASK-" + ts + randPart
+}
+
+func strconvBase36(value int64) string {
+	const digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+	if value == 0 {
+		return "0"
+	}
+	negative := value < 0
+	if negative {
+		value = -value
+	}
+	var out []byte
+	for value > 0 {
+		remainder := value % 36
+		out = append(out, digits[remainder])
+		value /= 36
+	}
+	if negative {
+		out = append(out, '-')
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return string(out)
+}
+
+func normalizeUserID(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if idx := strings.IndexAny(value, " ("); idx > 0 {
+		return value[:idx]
+	}
+	return value
+}
+
+func hasAssignee(assignees []string, value string) bool {
+	for _, assignee := range assignees {
+		if normalizeUserID(assignee) == value {
+			return true
+		}
+	}
+	return false
+}
+
+func hasTag(tags []string, value string) bool {
+	for _, tag := range tags {
+		if tag == value || tag == "#"+value {
+			return true
+		}
+	}
+	return false
+}
+
+func parseAssignees(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+func parseTags(value string) []string {
+	fields := strings.Fields(value)
+	out := make([]string, 0, len(fields))
+	for _, field := range fields {
+		if field == "" {
+			continue
+		}
+		if !strings.HasPrefix(field, "#") {
+			field = "#" + field
+		}
+		out = append(out, field)
+	}
+	return out
+}
+
+func joinTags(tags []string) string {
+	out := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		if strings.HasPrefix(tag, "#") {
+			out = append(out, tag)
+		} else {
+			out = append(out, "#"+tag)
+		}
+	}
+	return strings.Join(out, " ")
+}
+
+func normalizeDueDate(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`).MatchString(trimmed) {
+		return trimmed
+	}
+	return ""
+}
+
+func splitCSV(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func toMarkupChildren(items []masc.ComponentOrHTML) []masc.MarkupOrChild {
+	out := make([]masc.MarkupOrChild, 0, len(items))
+	for _, item := range items {
+		out = append(out, item)
+	}
+	return out
+}
+
+func logoutCmd() masc.Cmd {
+	return func() masc.Msg {
+		options := map[string]interface{}{"method": "POST"}
+		_, _ = awaitPromise(js.Global().Call("fetch", "/logout", js.ValueOf(options)))
+		js.Global().Get("location").Call("reload")
+		return nil
+	}
+}
