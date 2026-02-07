@@ -52,6 +52,14 @@ type Program struct {
 	tasks    []Task
 	archived []Task
 
+	lastSavedKanban  string
+	lastSavedArchive string
+
+	commitMessageDraft string
+	commitDiff          string
+	pendingCommitKanban string
+	pendingCommitArchive string
+
 	loading          bool
 	commitInProgress bool
 	dirty            bool
@@ -128,12 +136,14 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		config, tasks := parseKanban(kanbanContent)
 		p.config = config
 		p.tasks = tasks
+		p.lastSavedKanban = msg.KanbanContent
 
 		archiveContent := msg.ArchiveContent
 		if msg.MissingArchive || strings.TrimSpace(archiveContent) == "" {
 			archiveContent = createDefaultArchiveContent()
 		}
 		p.archived = parseArchive(archiveContent)
+		p.lastSavedArchive = msg.ArchiveContent
 
 		p.dirty = msg.MissingKanban || msg.MissingArchive
 		return p, nil
@@ -141,10 +151,11 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		if !p.repoLoaded || !p.dirty || p.commitInProgress {
 			return p, nil
 		}
-		p.commitInProgress = true
+		p.modal = ModalCommit
 		p.error = ""
-		p.status = "Committing changes…"
-		return p, p.commitCmd()
+		p.commitMessageDraft = ""
+		p.commitDiff = buildCommitDiff(p.repo, p.lastSavedKanban, p.lastSavedArchive, p.generateKanbanMarkdown(), p.generateArchiveMarkdown())
+		return p, nil
 	case CommitResult:
 		p.commitInProgress = false
 		if msg.Error != "" {
@@ -152,6 +163,12 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 			return p, nil
 		}
 		p.dirty = false
+		if p.pendingCommitKanban != "" || p.pendingCommitArchive != "" {
+			p.lastSavedKanban = p.pendingCommitKanban
+			p.lastSavedArchive = p.pendingCommitArchive
+			p.pendingCommitKanban = ""
+			p.pendingCommitArchive = ""
+		}
 		if msg.OID != "" {
 			p.headOID = msg.OID
 		}
@@ -199,6 +216,9 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 			p.newSubtaskDue = ""
 		case ModalArchive:
 			p.archiveSearch = ""
+		case ModalCommit:
+			p.commitMessageDraft = ""
+			p.commitDiff = buildCommitDiff(p.repo, p.lastSavedKanban, p.lastSavedArchive, p.generateKanbanMarkdown(), p.generateArchiveMarkdown())
 		}
 		return p, nil
 	case CloseModal:
@@ -235,6 +255,28 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 			p.newSubtaskDue = msg.Value
 		}
 		return p, nil
+	case UpdateCommitMessage:
+		p.commitMessageDraft = msg.Value
+		return p, nil
+	case ConfirmCommit:
+		if !p.repoLoaded || !p.dirty || p.commitInProgress {
+			return p, nil
+		}
+		if strings.TrimSpace(msg.Message) == "" {
+			p.error = "Commit message is required."
+			return p, nil
+		}
+		p.commitInProgress = true
+		p.error = ""
+		p.status = "Committing changes…"
+		p.modal = ModalNone
+		p.pendingCommitKanban = p.generateKanbanMarkdown()
+		p.pendingCommitArchive = p.generateArchiveMarkdown()
+		files := map[string]string{
+			p.repo.KanbanPath:  p.pendingCommitKanban,
+			p.repo.ArchivePath: p.pendingCommitArchive,
+		}
+		return p, p.commitCmd(strings.TrimSpace(msg.Message), files)
 	case UpdateDetailSubtaskField:
 		switch msg.Field {
 		case "text":
@@ -356,7 +398,13 @@ func (p *Program) Render(send func(masc.Msg)) masc.ComponentOrHTML {
 		p.renderHeader(send),
 		masc.If(p.repoLoaded, p.renderFilterBar(send)),
 		elem.Main(
-			masc.Markup(masc.Class("container")),
+			masc.Markup(
+				masc.Class("container"),
+				masc.Style("max-width", "none"),
+				masc.Style("width", "100%"),
+				masc.Style("margin", "2rem 0"),
+				masc.Style("padding", "0 2rem"),
+			),
 			masc.If(p.loading, elem.Div(masc.Markup(masc.Class("loading")), masc.Text("Loading…"))),
 			masc.If(!p.repoLoaded && !p.loading, p.renderWelcome()),
 			masc.If(p.repoLoaded, p.renderBoard(send)),
@@ -438,24 +486,18 @@ func (p *Program) loadRepoCmd() masc.Cmd {
 	}
 }
 
-func (p *Program) commitCmd() masc.Cmd {
+func (p *Program) commitCmd(message string, files map[string]string) masc.Cmd {
 	repoName := p.repo.Repo
 	branch := p.branch
 	headOID := p.headOID
-	message := strings.TrimSpace(p.cfg.CommitMessage)
-	if message == "" {
-		message = "Update kanban"
-	}
-	kanban := p.generateKanbanMarkdown()
-	archive := p.generateArchiveMarkdown()
-	files := map[string]string{
-		p.repo.KanbanPath:  kanban,
-		p.repo.ArchivePath: archive,
-	}
+	commitMessage := strings.TrimSpace(message)
 	token := p.token
 	return func() masc.Msg {
+		if commitMessage == "" {
+			return CommitResult{Error: "commit message is required"}
+		}
 		client := &GraphQLClient{Token: token}
-		result, err := commitRepoFiles(client, repoName, branch, headOID, message, files)
+		result, err := commitRepoFiles(client, repoName, branch, headOID, commitMessage, files)
 		if err != nil {
 			return CommitResult{Error: err.Error()}
 		}
@@ -488,7 +530,12 @@ func (p *Program) renderHeader(send func(masc.Msg)) masc.ComponentOrHTML {
 	return elem.Header(
 		masc.Markup(masc.Class("header")),
 		elem.Div(
-			masc.Markup(masc.Class("header-content")),
+			masc.Markup(
+				masc.Class("header-content"),
+				masc.Style("max-width", "none"),
+				masc.Style("width", "100%"),
+				masc.Style("margin", "0"),
+			),
 			elem.Div(
 				masc.Markup(masc.Class("brand")),
 				elem.Div(masc.Markup(masc.Class("brand-mark")), masc.Text("K")),
@@ -582,7 +629,12 @@ func (p *Program) renderFilterBar(send func(masc.Msg)) masc.ComponentOrHTML {
 	return elem.Div(
 		masc.Markup(masc.Class("filter-bar")),
 		elem.Div(
-			masc.Markup(masc.Class("filter-content")),
+			masc.Markup(
+				masc.Class("filter-content"),
+				masc.Style("max-width", "none"),
+				masc.Style("width", "100%"),
+				masc.Style("margin", "0"),
+			),
 			elem.Div(
 				masc.Markup(masc.Class("filter-row")),
 				elem.Div(
@@ -699,7 +751,11 @@ func (p *Program) renderBoard(send func(masc.Msg)) masc.ComponentOrHTML {
 	}
 
 	return elem.Div(
-		append([]masc.MarkupOrChild{masc.Markup(masc.Class("kanban-board"))}, toMarkupChildren(columnNodes)...)...,
+		append([]masc.MarkupOrChild{masc.Markup(
+			masc.Class("kanban-board"),
+			masc.Style("width", "100%"),
+			masc.Style("min-width", "100%"),
+		)}, toMarkupChildren(columnNodes)...)...,
 	)
 }
 
@@ -826,6 +882,8 @@ func (p *Program) renderModal(send func(masc.Msg)) masc.ComponentOrHTML {
 		return p.renderArchiveModal(send)
 	case ModalColumns:
 		return p.renderColumnsModal(send)
+	case ModalCommit:
+		return p.renderCommitModal(send)
 	}
 	return nil
 }
@@ -1270,6 +1328,7 @@ func (p *Program) renderEditModal(send func(masc.Msg)) masc.ComponentOrHTML {
 			elem.Button(
 				masc.Markup(
 					masc.Class("btn", "btn-secondary"),
+					masc.Property("type", "button"),
 					masc.Style("padding", "0.5rem 1rem"),
 					masc.Style("flex", "0 0 auto"),
 					event.Click(func(e *masc.Event) {
@@ -1529,6 +1588,81 @@ func (p *Program) renderColumnsModal(send func(masc.Msg)) masc.ComponentOrHTML {
 		),
 		elem.Div(columnsContent...),
 	)
+}
+
+func (p *Program) renderCommitModal(send func(masc.Msg)) masc.ComponentOrHTML {
+	diffText := p.commitDiff
+	if strings.TrimSpace(diffText) == "" {
+		diffText = "No changes to commit."
+	}
+	missingBlankLine := commitMessageMissingBlankLine(p.commitMessageDraft)
+
+	return elem.Div(
+		masc.Markup(
+			masc.Class("modal", "active"),
+			event.Click(func(e *masc.Event) { send(CloseModal{Mode: ModalCommit}) }),
+		),
+		elem.Div(
+			masc.Markup(masc.Class("modal-content"), event.Click(func(e *masc.Event) {}).StopPropagation()),
+			elem.Div(
+				masc.Markup(masc.Class("modal-header")),
+				elem.Heading2(masc.Text("Commit Changes")),
+				elem.Button(
+					masc.Markup(masc.Class("close-btn"), event.Click(func(e *masc.Event) { send(CloseModal{Mode: ModalCommit}) })),
+					masc.Text("×"),
+				),
+			),
+			elem.Div(
+				masc.Markup(masc.Class("form-group")),
+				elem.Label(masc.Text("Commit message")),
+				elem.TextArea(masc.Markup(
+					masc.Property("rows", "3"),
+					masc.Property("value", p.commitMessageDraft),
+					event.Input(func(e *masc.Event) { send(UpdateCommitMessage{Value: e.Target.Get("value").String()}) }),
+				)),
+				masc.If(missingBlankLine,
+					elem.Div(
+						masc.Markup(masc.Class("form-warning")),
+						masc.Text("Add a blank line between the subject and body."),
+					),
+				),
+			),
+			elem.Div(
+				masc.Markup(masc.Class("form-group")),
+				elem.Label(masc.Text("Diff")),
+				elem.Preformatted(
+					masc.Markup(masc.Class("diff-view")),
+					masc.Text(diffText),
+				),
+			),
+			elem.Div(
+				masc.Markup(masc.Class("actions")),
+				elem.Button(
+					masc.Markup(masc.Class("btn", "btn-secondary"), event.Click(func(e *masc.Event) { send(CloseModal{Mode: ModalCommit}) })),
+					masc.Text("Cancel"),
+				),
+				elem.Button(
+					masc.Markup(
+						masc.Class("btn", "btn-primary"),
+						masc.Property("disabled", !p.dirty || p.commitInProgress || strings.TrimSpace(p.commitMessageDraft) == "" || missingBlankLine),
+						event.Click(func(e *masc.Event) { send(ConfirmCommit{Message: p.commitMessageDraft}) }),
+					),
+					masc.Text("Commit"),
+				),
+			),
+		),
+	)
+}
+
+func commitMessageMissingBlankLine(message string) bool {
+	lines := strings.Split(strings.ReplaceAll(message, "\r\n", "\n"), "\n")
+	if len(lines) <= 1 {
+		return false
+	}
+	if strings.TrimSpace(lines[0]) == "" {
+		return false
+	}
+	return strings.TrimSpace(lines[1]) != ""
 }
 
 func (p *Program) renderError() masc.ComponentOrHTML {

@@ -70,8 +70,9 @@ body {
 }
 
 .header-content {
-  max-width: 1400px;
-  margin: 0 auto;
+  max-width: none;
+  width: 100%;
+  margin: 0;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -167,8 +168,9 @@ body {
 }
 
 .container {
-  max-width: 1400px;
-  margin: 2rem auto;
+  max-width: none;
+  width: 100%;
+  margin: 2rem 0;
   padding: 0 2rem;
 }
 
@@ -196,8 +198,9 @@ body {
 }
 
 .filter-content {
-  max-width: 1200px;
-  margin: 0 auto;
+  max-width: none;
+  width: 100%;
+  margin: 0;
   padding: 0 2rem;
 }
 
@@ -264,6 +267,8 @@ body {
   padding: 2rem;
   overflow-x: auto;
   justify-content: flex-start;
+  min-width: 100%;
+  width: 100%;
 }
 
 .kanban-column {
@@ -554,6 +559,24 @@ body {
 .form-group textarea {
   min-height: 100px;
   resize: vertical;
+}
+
+.form-warning {
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+  color: #b45309;
+}
+
+.diff-view {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 1rem;
+  font-family: "Consolas", "Monaco", "Menlo", monospace;
+  font-size: 0.85rem;
+  white-space: pre;
+  max-height: 50vh;
+  overflow: auto;
 }
 
 .actions {

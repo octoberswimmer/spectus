@@ -63,6 +63,10 @@ type UpdateFormField struct {
 	Value string
 }
 
+type UpdateCommitMessage struct {
+	Value string
+}
+
 type AddFormSubtask struct {
 	Text    string
 	DueDate string
@@ -84,6 +88,10 @@ type UpdateFormSubtaskDueDate struct {
 
 type DeleteFormSubtask struct {
 	Index int
+}
+
+type ConfirmCommit struct {
+	Message string
 }
 
 type UpdateDetailSubtaskField struct {
@@ -169,4 +177,5 @@ const (
 	ModalEdit    ModalMode = "edit"
 	ModalArchive ModalMode = "archive"
 	ModalColumns ModalMode = "columns"
+	ModalCommit  ModalMode = "commit"
 )
