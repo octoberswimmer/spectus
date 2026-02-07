@@ -145,6 +145,17 @@ body {
   background: #e8e8e8;
 }
 
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.btn:disabled:hover {
+  box-shadow: none;
+  transform: none;
+}
+
 .btn-danger {
   background: var(--danger);
   color: white;
