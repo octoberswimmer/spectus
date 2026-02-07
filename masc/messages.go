@@ -67,6 +67,14 @@ type UpdateCommitMessage struct {
 	Value string
 }
 
+type SetTagSuggestionsOpen struct {
+	Open bool
+}
+
+type SelectTagSuggestion struct {
+	Tag string
+}
+
 type AddFormSubtask struct {
 	Text    string
 	DueDate string

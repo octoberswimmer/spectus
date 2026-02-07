@@ -567,6 +567,37 @@ body {
   color: #b45309;
 }
 
+.tags-autocomplete {
+  margin-top: 0.5rem;
+  border: 1px solid #cbd5e0;
+  border-radius: 6px;
+  background: white;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.tag-option {
+  padding: 0.5rem 0.75rem;
+  cursor: pointer;
+  border-bottom: 1px solid #eee;
+}
+
+.tag-option:last-child {
+  border-bottom: none;
+}
+
+.tag-option:hover {
+  background: #f0f0f0;
+}
+
+.tag-pill {
+  background: var(--primary);
+  color: white;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.85rem;
+}
+
 .diff-view {
   background: var(--bg-primary);
   border: 1px solid var(--border-color);

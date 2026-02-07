@@ -59,6 +59,7 @@ type Program struct {
 	commitDiff          string
 	pendingCommitKanban string
 	pendingCommitArchive string
+	tagSuggestionsOpen bool
 
 	loading          bool
 	commitInProgress bool
@@ -148,7 +149,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		p.dirty = msg.MissingKanban || msg.MissingArchive
 		return p, nil
 	case CommitChanges:
-		if !p.repoLoaded || !p.dirty || p.commitInProgress {
+		if !p.repoLoaded || p.commitInProgress || !p.hasPendingCommitChanges() {
 			return p, nil
 		}
 		p.modal = ModalCommit
@@ -214,6 +215,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 			p.form = p.formForTask(msg.TaskID)
 			p.newSubtaskText = ""
 			p.newSubtaskDue = ""
+			p.tagSuggestionsOpen = false
 		case ModalArchive:
 			p.archiveSearch = ""
 		case ModalCommit:
@@ -228,6 +230,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		p.newSubtaskDue = ""
 		p.detailSubtaskText = ""
 		p.detailSubtaskDue = ""
+		p.tagSuggestionsOpen = false
 		return p, nil
 	case UpdateFormField:
 		switch msg.Field {
@@ -241,6 +244,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 			p.form.Assignees = msg.Value
 		case "tags":
 			p.form.Tags = msg.Value
+			p.tagSuggestionsOpen = true
 		case "created":
 			p.form.Created = msg.Value
 		case "completed":
@@ -258,8 +262,15 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 	case UpdateCommitMessage:
 		p.commitMessageDraft = msg.Value
 		return p, nil
+	case SetTagSuggestionsOpen:
+		p.tagSuggestionsOpen = msg.Open
+		return p, nil
+	case SelectTagSuggestion:
+		p.form.Tags = applyTagSuggestion(p.form.Tags, msg.Tag)
+		p.tagSuggestionsOpen = false
+		return p, nil
 	case ConfirmCommit:
-		if !p.repoLoaded || !p.dirty || p.commitInProgress {
+		if !p.repoLoaded || p.commitInProgress || !p.hasPendingCommitChanges() {
 			return p, nil
 		}
 		if strings.TrimSpace(msg.Message) == "" {
@@ -567,14 +578,14 @@ func (p *Program) renderHeader(send func(masc.Msg)) masc.ComponentOrHTML {
 						masc.Text("⚙️ Columns"),
 					),
 				),
-					masc.If(p.repoLoaded,
-						elem.Button(
-							masc.Markup(
-								masc.Class("btn", "btn-primary"),
-								masc.Property("disabled", !p.dirty || p.commitInProgress),
-								event.Click(func(e *masc.Event) { send(CommitChanges{}) }),
-							),
-							masc.Text("💾 Commit"),
+							masc.If(p.repoLoaded,
+								elem.Button(
+									masc.Markup(
+										masc.Class("btn", "btn-primary"),
+										masc.Property("disabled", !p.hasPendingCommitChanges() || p.commitInProgress),
+										event.Click(func(e *masc.Event) { send(CommitChanges{}) }),
+									),
+									masc.Text("💾 Commit"),
 						),
 				),
 				masc.If(p.loggedIn,
@@ -1194,6 +1205,59 @@ func (p *Program) renderEditModal(send func(masc.Msg)) masc.ComponentOrHTML {
 	form := p.form
 	isEdit := form.ID != ""
 
+	categories, users, tags := p.uniqueValues()
+	sort.Strings(categories)
+	sort.Strings(tags)
+
+	userIDs := make([]string, 0, len(users))
+	seenUsers := map[string]struct{}{}
+	for _, user := range users {
+		id := normalizeUserID(user)
+		if id == "" {
+			continue
+		}
+		if _, ok := seenUsers[id]; ok {
+			continue
+		}
+		seenUsers[id] = struct{}{}
+		userIDs = append(userIDs, id)
+	}
+	sort.Strings(userIDs)
+
+	tagSuggestions := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" {
+			continue
+		}
+		if !strings.HasPrefix(tag, "#") {
+			tag = "#" + tag
+		}
+		tagSuggestions = append(tagSuggestions, tag)
+	}
+
+	categoryPlaceholder := placeholderFromList(categories, 2, ", ")
+	assigneePlaceholder := placeholderFromList(userIDs, 2, ", ")
+	tagsPlaceholder := placeholderFromList(tagSuggestions, 2, " ")
+	tagDropdown := tagSuggestionsForInput(tagSuggestions, form.Tags)
+	showTagDropdown := p.tagSuggestionsOpen && len(tagDropdown) > 0
+	tagOptionNodes := make([]masc.ComponentOrHTML, 0, len(tagDropdown))
+	for _, tag := range tagDropdown {
+		tagValue := tag
+		tagOptionNodes = append(tagOptionNodes, elem.Div(
+			masc.Markup(
+				masc.Class("tag-option"),
+				event.MouseDown(func(e *masc.Event) {
+					send(SelectTagSuggestion{Tag: tagValue})
+				}).PreventDefault(),
+			),
+			elem.Span(
+				masc.Markup(masc.Class("tag-pill")),
+				masc.Text(tagValue),
+			),
+		))
+	}
+
 	statusOptions := make([]masc.ComponentOrHTML, 0, len(p.config.Columns))
 	for _, col := range p.config.Columns {
 		statusOptions = append(statusOptions, elem.Option(
@@ -1393,8 +1457,15 @@ func (p *Program) renderEditModal(send func(masc.Msg)) masc.ComponentOrHTML {
 							elem.Input(masc.Markup(
 								masc.Property("type", "text"),
 								masc.Property("value", form.Category),
+								masc.MarkupIf(categoryPlaceholder != "", masc.Property("placeholder", categoryPlaceholder)),
+								masc.MarkupIf(len(categories) > 0, masc.Attribute("list", "category-options")),
 								event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "category", Value: e.Target.Get("value").String()}) }),
 							)),
+							masc.If(len(categories) > 0,
+								elem.DataList(
+									append([]masc.MarkupOrChild{masc.Markup(masc.Attribute("id", "category-options"))}, toMarkupChildren(buildDataListOptions(categories, false))...)...,
+								),
+							),
 						),
 						elem.Div(
 							masc.Markup(masc.Class("form-group")),
@@ -1402,8 +1473,15 @@ func (p *Program) renderEditModal(send func(masc.Msg)) masc.ComponentOrHTML {
 							elem.Input(masc.Markup(
 								masc.Property("type", "text"),
 								masc.Property("value", form.Assignees),
+								masc.MarkupIf(assigneePlaceholder != "", masc.Property("placeholder", assigneePlaceholder)),
+								masc.MarkupIf(len(userIDs) > 0, masc.Attribute("list", "assignee-options")),
 								event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "assignees", Value: e.Target.Get("value").String()}) }),
 							)),
+							masc.If(len(userIDs) > 0,
+								elem.DataList(
+									append([]masc.MarkupOrChild{masc.Markup(masc.Attribute("id", "assignee-options"))}, toMarkupChildren(buildDataListOptions(userIDs, false))...)...,
+								),
+							),
 						),
 					),
 					elem.Div(
@@ -1438,8 +1516,16 @@ func (p *Program) renderEditModal(send func(masc.Msg)) masc.ComponentOrHTML {
 						elem.Input(masc.Markup(
 							masc.Property("type", "text"),
 							masc.Property("value", form.Tags),
+							masc.MarkupIf(tagsPlaceholder != "", masc.Property("placeholder", tagsPlaceholder)),
 							event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "tags", Value: e.Target.Get("value").String()}) }),
+							event.Focus(func(e *masc.Event) { send(SetTagSuggestionsOpen{Open: true}) }),
+							event.FocusOut(func(e *masc.Event) { send(SetTagSuggestionsOpen{Open: false}) }),
 						)),
+						masc.If(showTagDropdown,
+							elem.Div(
+								append([]masc.MarkupOrChild{masc.Markup(masc.Class("tags-autocomplete"))}, toMarkupChildren(tagOptionNodes)...)...,
+							),
+						),
 					),
 				elem.Div(
 					masc.Markup(masc.Class("form-group")),
@@ -1561,7 +1647,14 @@ func (p *Program) renderColumnsModal(send func(masc.Msg)) masc.ComponentOrHTML {
 					masc.Property("value", col.ID),
 					event.Input(func(e *masc.Event) { send(UpdateColumn{Index: index, Field: "id", Value: e.Target.Get("value").String()}) }),
 				)),
-				elem.Button(masc.Markup(masc.Class("btn", "btn-danger"), event.Click(func(e *masc.Event) { send(DeleteColumn{Index: index}) })), masc.Text("🗑️")),
+				elem.Button(
+					masc.Markup(
+						masc.Class("btn", "btn-ghost"),
+						masc.Style("color", "#e53e3e"),
+						event.Click(func(e *masc.Event) { send(DeleteColumn{Index: index}) }),
+					),
+					masc.Text("🗑️"),
+				),
 			),
 		))
 	}
@@ -1595,6 +1688,7 @@ func (p *Program) renderCommitModal(send func(masc.Msg)) masc.ComponentOrHTML {
 	if strings.TrimSpace(diffText) == "" {
 		diffText = "No changes to commit."
 	}
+	hasChanges := p.hasPendingCommitChanges()
 	missingBlankLine := commitMessageMissingBlankLine(p.commitMessageDraft)
 
 	return elem.Div(
@@ -1644,7 +1738,7 @@ func (p *Program) renderCommitModal(send func(masc.Msg)) masc.ComponentOrHTML {
 				elem.Button(
 					masc.Markup(
 						masc.Class("btn", "btn-primary"),
-						masc.Property("disabled", !p.dirty || p.commitInProgress || strings.TrimSpace(p.commitMessageDraft) == "" || missingBlankLine),
+						masc.Property("disabled", !hasChanges || p.commitInProgress || strings.TrimSpace(p.commitMessageDraft) == "" || missingBlankLine),
 						event.Click(func(e *masc.Event) { send(ConfirmCommit{Message: p.commitMessageDraft}) }),
 					),
 					masc.Text("Commit"),
@@ -1663,6 +1757,103 @@ func commitMessageMissingBlankLine(message string) bool {
 		return false
 	}
 	return strings.TrimSpace(lines[1]) != ""
+}
+
+func (p *Program) hasPendingCommitChanges() bool {
+	return p.lastSavedKanban != p.generateKanbanMarkdown() || p.lastSavedArchive != p.generateArchiveMarkdown()
+}
+
+func placeholderFromList(values []string, limit int, sep string) string {
+	if len(values) == 0 || limit <= 0 {
+		return ""
+	}
+	if len(values) < limit {
+		limit = len(values)
+	}
+	text := strings.Join(values[:limit], sep)
+	if len(values) > limit {
+		text += "..."
+	}
+	return text
+}
+
+func buildDataListOptions(values []string, ensureHashtag bool) []masc.ComponentOrHTML {
+	options := make([]masc.ComponentOrHTML, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if ensureHashtag && !strings.HasPrefix(value, "#") {
+			value = "#" + value
+		}
+		options = append(options, elem.Option(
+			masc.Markup(masc.Property("value", value)),
+			masc.Text(value),
+		))
+	}
+	return options
+}
+
+func tagSuggestionsForInput(allTags []string, input string) []string {
+	lastWord := lastTagWord(input)
+	currentTags := strings.Fields(input)
+	currentLookup := map[string]struct{}{}
+	for _, tag := range currentTags {
+		currentLookup[strings.ToLower(tag)] = struct{}{}
+	}
+
+	out := make([]string, 0, len(allTags))
+	lastLower := strings.ToLower(lastWord)
+	for _, tag := range allTags {
+		clean := strings.TrimSpace(tag)
+		if clean == "" {
+			continue
+		}
+		tagLower := strings.ToLower(clean)
+		matchesPrefix := lastLower == "" || strings.HasPrefix(tagLower, lastLower)
+		if !matchesPrefix {
+			continue
+		}
+		_, already := currentLookup[tagLower]
+		if already && !(lastLower != "" && strings.HasPrefix(tagLower, lastLower)) {
+			continue
+		}
+		out = append(out, clean)
+	}
+	return out
+}
+
+func lastTagWord(input string) string {
+	if strings.TrimSpace(input) == "" {
+		return ""
+	}
+	if strings.HasSuffix(input, " ") || strings.HasSuffix(input, "\t") || strings.HasSuffix(input, "\n") {
+		return ""
+	}
+	parts := strings.Fields(input)
+	if len(parts) == 0 {
+		return ""
+	}
+	return parts[len(parts)-1]
+}
+
+func applyTagSuggestion(input string, tag string) string {
+	if strings.TrimSpace(tag) == "" {
+		return input
+	}
+	if strings.TrimSpace(input) == "" {
+		return tag + " "
+	}
+	if strings.HasSuffix(input, " ") || strings.HasSuffix(input, "\t") || strings.HasSuffix(input, "\n") {
+		return strings.TrimRight(input, " \t\r\n") + " " + tag + " "
+	}
+	parts := strings.Fields(input)
+	if len(parts) == 0 {
+		return tag + " "
+	}
+	parts[len(parts)-1] = tag
+	return strings.Join(parts, " ") + " "
 }
 
 func (p *Program) renderError() masc.ComponentOrHTML {
