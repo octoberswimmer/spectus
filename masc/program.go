@@ -864,9 +864,12 @@ func (p *Program) renderDetailModal(send func(masc.Msg)) masc.ComponentOrHTML {
 	}
 
 	return elem.Div(
-		masc.Markup(masc.Class("modal", "active")),
+		masc.Markup(
+			masc.Class("modal", "active"),
+			event.Click(func(e *masc.Event) { send(CloseModal{Mode: ModalDetail}) }),
+		),
 		elem.Div(
-			masc.Markup(masc.Class("modal-content")),
+			masc.Markup(masc.Class("modal-content"), event.Click(func(e *masc.Event) {}).StopPropagation()),
 			elem.Div(
 				masc.Markup(masc.Class("modal-header", "task-detail-header")),
 				elem.Heading2(masc.Text(task.Title)),
@@ -1144,54 +1147,133 @@ func (p *Program) renderEditModal(send func(masc.Msg)) masc.ComponentOrHTML {
 	subtaskItems := make([]masc.ComponentOrHTML, 0, len(form.Subtasks))
 	for idx, st := range form.Subtasks {
 		index := idx
-		subtaskItems = append(subtaskItems, elem.Div(
-			masc.Markup(masc.Class("form-group")),
-			elem.Div(
-				masc.Markup(masc.Style("display", "flex"), masc.Style("gap", "0.5rem"), masc.Style("align-items", "center")),
-				elem.Input(masc.Markup(
-					masc.Property("type", "checkbox"),
-					masc.MarkupIf(st.Completed, masc.Property("checked", true)),
-					event.Change(func(e *masc.Event) { send(ToggleFormSubtask{Index: index}) }),
-				)),
-				elem.Input(masc.Markup(
-					masc.Property("type", "text"),
-					masc.Property("value", st.Text),
-					event.Input(func(e *masc.Event) { send(UpdateFormSubtaskText{Index: index, Value: e.Target.Get("value").String()}) }),
-				)),
-				elem.Input(masc.Markup(
-					masc.Property("type", "date"),
-					masc.Property("value", st.DueDate),
-					event.Input(func(e *masc.Event) { send(UpdateFormSubtaskDueDate{Index: index, Value: e.Target.Get("value").String()}) }),
-				)),
-				elem.Button(masc.Markup(masc.Class("btn", "btn-ghost"), event.Click(func(e *masc.Event) { send(DeleteFormSubtask{Index: index}) })), masc.Text("🗑️")),
+		subtaskItems = append(subtaskItems, elem.ListItem(
+			masc.Markup(
+				masc.Style("width", "100%"),
+				masc.Style("box-sizing", "border-box"),
+				masc.Style("padding", "0.5rem"),
+				masc.Style("margin-bottom", "0.25rem"),
+				masc.Style("background", "white"),
+				masc.Style("border", "1px solid #cbd5e0"),
+				masc.Style("border-radius", "4px"),
+				masc.Style("display", "flex"),
+				masc.Style("align-items", "center"),
+				masc.Style("gap", "0.5rem"),
+				masc.Style("flex-wrap", "nowrap"),
+			),
+			elem.Input(masc.Markup(
+				masc.Property("type", "checkbox"),
+				masc.MarkupIf(st.Completed, masc.Property("checked", true)),
+				masc.Style("width", "16px"),
+				masc.Style("height", "16px"),
+				masc.Style("flex", "0 0 auto"),
+				masc.Style("cursor", "pointer"),
+				event.Change(func(e *masc.Event) { send(ToggleFormSubtask{Index: index}) }),
+			)),
+			elem.Span(masc.Markup(
+				masc.Style("flex", "1 1 0"),
+				masc.Style("min-width", "0"),
+				masc.Style("white-space", "nowrap"),
+				masc.Style("overflow", "hidden"),
+				masc.Style("text-overflow", "ellipsis"),
+				masc.MarkupIf(st.Completed,
+					masc.Style("text-decoration", "line-through"),
+					masc.Style("color", "#999"),
+				),
+			), masc.Text(st.Text)),
+			elem.Input(masc.Markup(
+				masc.Property("type", "date"),
+				masc.Property("value", st.DueDate),
+				masc.Style("flex", "0 0 auto"),
+				masc.Style("margin-left", "auto"),
+				masc.Style("width", "140px"),
+				masc.Style("max-width", "140px"),
+				masc.Style("min-width", "140px"),
+				masc.Style("box-sizing", "border-box"),
+				masc.Style("padding", "0.35rem"),
+				masc.Style("border", "1px solid #cbd5e0"),
+				masc.Style("border-radius", "4px"),
+				masc.Style("font-size", "0.85rem"),
+				masc.Style("background", "white"),
+				event.Input(func(e *masc.Event) { send(UpdateFormSubtaskDueDate{Index: index, Value: e.Target.Get("value").String()}) }),
+			)),
+			elem.Button(
+				masc.Markup(
+					masc.Style("background", "none"),
+					masc.Style("border", "none"),
+					masc.Style("flex", "0 0 auto"),
+					masc.Style("cursor", "pointer"),
+					masc.Style("color", "#e53e3e"),
+					masc.Style("font-size", "1rem"),
+					masc.Style("padding", "0.25rem"),
+					event.Click(func(e *masc.Event) { send(DeleteFormSubtask{Index: index}) }),
+				),
+				masc.Text("🗑️"),
 			),
 		))
 	}
 
-	subtaskChildren := make([]masc.MarkupOrChild, 0, len(subtaskItems)+3)
+	subtaskChildren := make([]masc.MarkupOrChild, 0, len(subtaskItems)+4)
 	subtaskChildren = append(subtaskChildren, masc.Markup(masc.Class("form-group")), elem.Label(masc.Text("Subtasks")))
-	subtaskChildren = append(subtaskChildren, toMarkupChildren(subtaskItems)...)
+	subtaskChildren = append(subtaskChildren, elem.UnorderedList(
+		append(
+			[]masc.MarkupOrChild{masc.Markup(
+				masc.Style("list-style", "none"),
+				masc.Style("padding", "0"),
+				masc.Style("margin", "0 0 0.5rem 0"),
+			)},
+			toMarkupChildren(subtaskItems)...,
+		)...,
+	))
 	subtaskChildren = append(subtaskChildren,
 		elem.Div(
-			masc.Markup(masc.Style("display", "flex"), masc.Style("gap", "0.5rem"), masc.Style("align-items", "center")),
+			masc.Markup(
+				masc.Style("display", "flex"),
+				masc.Style("gap", "0.5rem"),
+				masc.Style("flex-wrap", "nowrap"),
+				masc.Style("width", "100%"),
+				masc.Style("box-sizing", "border-box"),
+			),
 			elem.Input(masc.Markup(
 				masc.Property("type", "text"),
-				masc.Property("placeholder", "New subtask"),
+				masc.Property("placeholder", "Add a subtask..."),
 				masc.Property("value", p.newSubtaskText),
+				masc.Style("flex", "1 1 0"),
+				masc.Style("min-width", "0"),
+				masc.Style("padding", "0.5rem"),
+				masc.Style("border", "2px solid #cbd5e0"),
+				masc.Style("border-radius", "4px"),
+				masc.Style("font-size", "0.9rem"),
 				event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "new_subtask_text", Value: e.Target.Get("value").String()}) }),
 			)),
 			elem.Input(masc.Markup(
 				masc.Property("type", "date"),
 				masc.Property("value", p.newSubtaskDue),
+				masc.Style("flex", "0 0 auto"),
+				masc.Style("margin-left", "auto"),
+				masc.Style("width", "140px"),
+				masc.Style("max-width", "140px"),
+				masc.Style("min-width", "140px"),
+				masc.Style("box-sizing", "border-box"),
+				masc.Style("padding", "0.5rem"),
+				masc.Style("border", "2px solid #cbd5e0"),
+				masc.Style("border-radius", "4px"),
+				masc.Style("font-size", "0.9rem"),
+				masc.Style("background", "white"),
 				event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "new_subtask_due", Value: e.Target.Get("value").String()}) }),
 			)),
 			elem.Button(
-				masc.Markup(masc.Class("btn", "btn-secondary"), event.Click(func(e *masc.Event) {
-					if strings.TrimSpace(p.newSubtaskText) == "" {
-						return
-					}
-					send(AddFormSubtask{Text: p.newSubtaskText, DueDate: p.newSubtaskDue})
-				})),
+				masc.Markup(
+					masc.Class("btn", "btn-secondary"),
+					masc.Style("padding", "0.5rem 1rem"),
+					masc.Style("flex", "0 0 auto"),
+					event.Click(func(e *masc.Event) {
+						if strings.TrimSpace(p.newSubtaskText) == "" {
+							return
+						}
+						send(AddFormSubtask{Text: p.newSubtaskText, DueDate: p.newSubtaskDue})
+					}),
+				),
 				masc.Text("+ Add"),
 			),
 		),
@@ -1200,7 +1282,7 @@ func (p *Program) renderEditModal(send func(masc.Msg)) masc.ComponentOrHTML {
 	return elem.Div(
 		masc.Markup(masc.Class("modal", "active")),
 		elem.Div(
-			masc.Markup(masc.Class("modal-content")),
+			masc.Markup(masc.Class("modal-content"), event.Click(func(e *masc.Event) {}).StopPropagation()),
 			elem.Div(
 				masc.Markup(masc.Class("modal-header")),
 				elem.Heading2(masc.Text(func() string {
@@ -1214,71 +1296,87 @@ func (p *Program) renderEditModal(send func(masc.Msg)) masc.ComponentOrHTML {
 					masc.Text("×"),
 				),
 			),
-			elem.Form(
-				masc.Markup(event.Submit(func(e *masc.Event) { send(SaveTask{}) }).PreventDefault()),
-				elem.Div(
-					masc.Markup(masc.Class("form-group")),
-					elem.Label(masc.Text("Title *")),
-					elem.Input(masc.Markup(
-						masc.Property("type", "text"),
-						masc.Property("value", form.Title),
-						event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "title", Value: e.Target.Get("value").String()}) }),
-					)),
-				),
-				elem.Div(
-					masc.Markup(masc.Class("form-group")),
-					elem.Label(masc.Text("Column *")),
-					elem.Select(
-						append([]masc.MarkupOrChild{
-							masc.Markup(event.Change(func(e *masc.Event) { send(UpdateFormField{Field: "status", Value: e.Target.Get("value").String()}) })),
-						}, toMarkupChildren(statusOptions)...)...,
+				elem.Form(
+					masc.Markup(event.Submit(func(e *masc.Event) { send(SaveTask{}) }).PreventDefault()),
+					elem.Div(
+						masc.Markup(masc.Class("form-group")),
+						elem.Label(masc.Text("Title *")),
+						elem.Input(masc.Markup(
+							masc.Property("type", "text"),
+							masc.Property("value", form.Title),
+							event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "title", Value: e.Target.Get("value").String()}) }),
+						)),
 					),
-				),
-				elem.Div(
-					masc.Markup(masc.Class("form-group")),
-					elem.Label(masc.Text("Category")),
-					elem.Input(masc.Markup(
-						masc.Property("type", "text"),
-						masc.Property("value", form.Category),
-						event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "category", Value: e.Target.Get("value").String()}) }),
-					)),
-				),
-				elem.Div(
-					masc.Markup(masc.Class("form-group")),
-					elem.Label(masc.Text("Assignees")),
-					elem.Input(masc.Markup(
-						masc.Property("type", "text"),
-						masc.Property("value", form.Assignees),
-						event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "assignees", Value: e.Target.Get("value").String()}) }),
-					)),
-				),
-				elem.Div(
-					masc.Markup(masc.Class("form-group")),
-					elem.Label(masc.Text("Tags")),
-					elem.Input(masc.Markup(
-						masc.Property("type", "text"),
-						masc.Property("value", form.Tags),
-						event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "tags", Value: e.Target.Get("value").String()}) }),
-					)),
-				),
-				elem.Div(
-					masc.Markup(masc.Class("form-group")),
-					elem.Label(masc.Text("Created")),
-					elem.Input(masc.Markup(
-						masc.Property("type", "date"),
-						masc.Property("value", form.Created),
-						event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "created", Value: e.Target.Get("value").String()}) }),
-					)),
-				),
-				elem.Div(
-					masc.Markup(masc.Class("form-group")),
-					elem.Label(masc.Text("Completed")),
-					elem.Input(masc.Markup(
-						masc.Property("type", "date"),
-						masc.Property("value", form.Completed),
-						event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "completed", Value: e.Target.Get("value").String()}) }),
-					)),
-				),
+					elem.Div(
+						masc.Markup(
+							masc.Style("display", "grid"),
+							masc.Style("grid-template-columns", "repeat(auto-fit, minmax(180px, 1fr))"),
+							masc.Style("gap", "1rem"),
+							masc.Style("margin-bottom", "1rem"),
+						),
+						elem.Div(
+							masc.Markup(masc.Class("form-group")),
+							elem.Label(masc.Text("Column *")),
+							elem.Select(
+								append([]masc.MarkupOrChild{
+									masc.Markup(event.Change(func(e *masc.Event) { send(UpdateFormField{Field: "status", Value: e.Target.Get("value").String()}) })),
+								}, toMarkupChildren(statusOptions)...)...,
+							),
+						),
+						elem.Div(
+							masc.Markup(masc.Class("form-group")),
+							elem.Label(masc.Text("Category")),
+							elem.Input(masc.Markup(
+								masc.Property("type", "text"),
+								masc.Property("value", form.Category),
+								event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "category", Value: e.Target.Get("value").String()}) }),
+							)),
+						),
+						elem.Div(
+							masc.Markup(masc.Class("form-group")),
+							elem.Label(masc.Text("Assigned to")),
+							elem.Input(masc.Markup(
+								masc.Property("type", "text"),
+								masc.Property("value", form.Assignees),
+								event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "assignees", Value: e.Target.Get("value").String()}) }),
+							)),
+						),
+					),
+					elem.Div(
+						masc.Markup(
+							masc.Style("display", "grid"),
+							masc.Style("grid-template-columns", "repeat(auto-fit, minmax(180px, 1fr))"),
+							masc.Style("gap", "1rem"),
+							masc.Style("margin-bottom", "1rem"),
+						),
+						elem.Div(
+							masc.Markup(masc.Class("form-group")),
+							elem.Label(masc.Text("Created")),
+							elem.Input(masc.Markup(
+								masc.Property("type", "date"),
+								masc.Property("value", form.Created),
+								event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "created", Value: e.Target.Get("value").String()}) }),
+							)),
+						),
+						elem.Div(
+							masc.Markup(masc.Class("form-group")),
+							elem.Label(masc.Text("Completed")),
+							elem.Input(masc.Markup(
+								masc.Property("type", "date"),
+								masc.Property("value", form.Completed),
+								event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "completed", Value: e.Target.Get("value").String()}) }),
+							)),
+						),
+					),
+					elem.Div(
+						masc.Markup(masc.Class("form-group")),
+						elem.Label(masc.Text("Tags")),
+						elem.Input(masc.Markup(
+							masc.Property("type", "text"),
+							masc.Property("value", form.Tags),
+							event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "tags", Value: e.Target.Get("value").String()}) }),
+						)),
+					),
 				elem.Div(
 					masc.Markup(masc.Class("form-group")),
 					elem.Label(masc.Text("Description")),
@@ -1347,7 +1445,7 @@ func (p *Program) renderArchiveModal(send func(masc.Msg)) masc.ComponentOrHTML {
 
 	archiveContent := make([]masc.MarkupOrChild, 0, len(items)+3)
 	archiveContent = append(archiveContent,
-		masc.Markup(masc.Class("modal-content")),
+		masc.Markup(masc.Class("modal-content"), event.Click(func(e *masc.Event) {}).StopPropagation()),
 		elem.Div(
 			masc.Markup(masc.Class("modal-header")),
 			elem.Heading2(masc.Text("Archives")),
@@ -1369,7 +1467,10 @@ func (p *Program) renderArchiveModal(send func(masc.Msg)) masc.ComponentOrHTML {
 	archiveContent = append(archiveContent, toMarkupChildren(items)...)
 
 	return elem.Div(
-		masc.Markup(masc.Class("modal", "active")),
+		masc.Markup(
+			masc.Class("modal", "active"),
+			event.Click(func(e *masc.Event) { send(CloseModal{Mode: ModalArchive}) }),
+		),
 		elem.Div(archiveContent...),
 	)
 }
@@ -1403,7 +1504,7 @@ func (p *Program) renderColumnsModal(send func(masc.Msg)) masc.ComponentOrHTML {
 
 	columnsContent := make([]masc.MarkupOrChild, 0, len(items)+3)
 	columnsContent = append(columnsContent,
-		masc.Markup(masc.Class("modal-content")),
+		masc.Markup(masc.Class("modal-content"), event.Click(func(e *masc.Event) {}).StopPropagation()),
 		elem.Div(
 			masc.Markup(masc.Class("modal-header")),
 			elem.Heading2(masc.Text("Manage Columns")),
@@ -1417,7 +1518,10 @@ func (p *Program) renderColumnsModal(send func(masc.Msg)) masc.ComponentOrHTML {
 	columnsContent = append(columnsContent, toMarkupChildren(items)...)
 
 	return elem.Div(
-		masc.Markup(masc.Class("modal", "active")),
+		masc.Markup(
+			masc.Class("modal", "active"),
+			event.Click(func(e *masc.Event) { send(CloseModal{Mode: ModalColumns}) }),
+		),
 		elem.Div(columnsContent...),
 	)
 }
