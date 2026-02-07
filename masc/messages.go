@@ -186,4 +186,5 @@ const (
 	ModalArchive ModalMode = "archive"
 	ModalColumns ModalMode = "columns"
 	ModalCommit  ModalMode = "commit"
+	ModalTodo    ModalMode = "todo"
 )

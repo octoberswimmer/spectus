@@ -578,6 +578,12 @@ func (p *Program) renderHeader(send func(masc.Msg)) masc.ComponentOrHTML {
 						masc.Text("⚙️ Columns"),
 					),
 				),
+				masc.If(p.repoLoaded,
+					elem.Button(
+						masc.Markup(masc.Class("btn", "btn-secondary"), event.Click(func(e *masc.Event) { send(OpenModal{Mode: ModalTodo}) })),
+						masc.Text("📋 TODO"),
+					),
+				),
 							masc.If(p.repoLoaded,
 								elem.Button(
 									masc.Markup(
@@ -895,6 +901,8 @@ func (p *Program) renderModal(send func(masc.Msg)) masc.ComponentOrHTML {
 		return p.renderColumnsModal(send)
 	case ModalCommit:
 		return p.renderCommitModal(send)
+	case ModalTodo:
+		return p.renderTodoModal(send)
 	}
 	return nil
 }
@@ -1748,6 +1756,108 @@ func (p *Program) renderCommitModal(send func(masc.Msg)) masc.ComponentOrHTML {
 	)
 }
 
+type todoItem struct {
+	TaskID          string
+	TaskTitle       string
+	TaskAssignees   []string
+	SubtaskIndex    int
+	SubtaskText     string
+	SubtaskDueDate  string
+	SubtaskSortDate string
+}
+
+func (p *Program) renderTodoModal(send func(masc.Msg)) masc.ComponentOrHTML {
+	items := p.buildTodoItems()
+	listChildren := make([]masc.ComponentOrHTML, 0, len(items)*2)
+
+	if len(items) == 0 {
+		listChildren = append(listChildren, elem.Paragraph(
+			masc.Markup(masc.Class("todo-empty")),
+			masc.Text("No incomplete subtasks"),
+		))
+	} else {
+		currentTaskID := ""
+		var currentGroup []masc.ComponentOrHTML
+		for _, item := range items {
+			itemValue := item
+			if itemValue.TaskID != currentTaskID {
+				if len(currentGroup) > 0 {
+					listChildren = append(listChildren, elem.Div(
+						append([]masc.MarkupOrChild{masc.Markup(masc.Class("todo-task-group"))}, toMarkupChildren(currentGroup)...)...,
+					))
+					currentGroup = nil
+				}
+				currentTaskID = itemValue.TaskID
+				assigneeText := strings.Join(itemValue.TaskAssignees, ", ")
+				taskHeaderChildren := []masc.ComponentOrHTML{
+					elem.Span(masc.Text(itemValue.TaskTitle)),
+					elem.Span(masc.Markup(masc.Class("todo-task-id")), masc.Text("("+itemValue.TaskID+")")),
+				}
+				if assigneeText != "" {
+					taskHeaderChildren = append(taskHeaderChildren, elem.Span(masc.Markup(masc.Class("todo-task-assignees")), masc.Text(assigneeText)))
+				}
+				currentGroup = append(currentGroup, elem.Div(
+					append([]masc.MarkupOrChild{
+						masc.Markup(
+							masc.Class("todo-task-header"),
+							event.Click(func(e *masc.Event) {
+								send(OpenModal{Mode: ModalDetail, TaskID: itemValue.TaskID})
+							}),
+						),
+					}, toMarkupChildren(taskHeaderChildren)...)...,
+				))
+			}
+
+			subtaskChildren := []masc.ComponentOrHTML{
+				elem.Input(masc.Markup(
+					masc.Property("type", "checkbox"),
+					masc.Style("cursor", "pointer"),
+					event.Change(func(e *masc.Event) { send(ToggleTaskSubtask{TaskID: itemValue.TaskID, Index: itemValue.SubtaskIndex}) }),
+				)),
+				elem.Span(masc.Markup(masc.Class("todo-subtask-text")), masc.Text(itemValue.SubtaskText)),
+			}
+			if itemValue.SubtaskDueDate != "" {
+				subtaskChildren = append(subtaskChildren, elem.Span(
+					masc.Markup(masc.Class("todo-due")),
+					masc.Text("Due: "+itemValue.SubtaskDueDate),
+				))
+			}
+			currentGroup = append(currentGroup, elem.Div(
+				append([]masc.MarkupOrChild{masc.Markup(masc.Class("todo-subtask"))}, toMarkupChildren(subtaskChildren)...)...,
+			))
+		}
+		if len(currentGroup) > 0 {
+			listChildren = append(listChildren, elem.Div(
+				append([]masc.MarkupOrChild{masc.Markup(masc.Class("todo-task-group"))}, toMarkupChildren(currentGroup)...)...,
+			))
+		}
+	}
+
+	return elem.Div(
+		masc.Markup(
+			masc.Class("modal", "active"),
+			event.Click(func(e *masc.Event) { send(CloseModal{Mode: ModalTodo}) }),
+		),
+		elem.Div(
+			masc.Markup(masc.Class("modal-content", "todo-modal"), masc.Style("max-width", "700px"), event.Click(func(e *masc.Event) {}).StopPropagation()),
+			elem.Div(
+				masc.Markup(masc.Class("modal-header")),
+				elem.Heading2(masc.Text("📋 TODO")),
+				elem.Button(
+					masc.Markup(masc.Class("close-btn"), event.Click(func(e *masc.Event) { send(CloseModal{Mode: ModalTodo}) })),
+					masc.Text("×"),
+				),
+			),
+			elem.Div(
+				masc.Markup(masc.Class("todo-body")),
+				elem.Div(
+					append([]masc.MarkupOrChild{masc.Markup(masc.Class("todo-list"))}, toMarkupChildren(listChildren)...)...,
+				),
+			),
+		),
+	)
+}
+
 func commitMessageMissingBlankLine(message string) bool {
 	lines := strings.Split(strings.ReplaceAll(message, "\r\n", "\n"), "\n")
 	if len(lines) <= 1 {
@@ -1761,6 +1871,61 @@ func commitMessageMissingBlankLine(message string) bool {
 
 func (p *Program) hasPendingCommitChanges() bool {
 	return p.lastSavedKanban != p.generateKanbanMarkdown() || p.lastSavedArchive != p.generateArchiveMarkdown()
+}
+
+func (p *Program) buildTodoItems() []todoItem {
+	items := make([]todoItem, 0)
+	for _, task := range p.tasks {
+		if len(task.Subtasks) == 0 {
+			continue
+		}
+		sortDate := task.Modified
+		if sortDate == "" {
+			sortDate = task.Created
+		}
+		if sortDate == "" {
+			sortDate = "9999-99-99"
+		}
+		for idx, st := range task.Subtasks {
+			if st.Completed {
+				continue
+			}
+			items = append(items, todoItem{
+				TaskID:          task.ID,
+				TaskTitle:       task.Title,
+				TaskAssignees:   task.Assignees,
+				SubtaskIndex:    idx,
+				SubtaskText:     st.Text,
+				SubtaskDueDate:  normalizeDueDate(st.DueDate),
+				SubtaskSortDate: sortDate,
+			})
+		}
+	}
+
+	sort.Slice(items, func(i, j int) bool {
+		a := items[i]
+		b := items[j]
+		aHasDue := a.SubtaskDueDate != ""
+		bHasDue := b.SubtaskDueDate != ""
+		if aHasDue != bHasDue {
+			return aHasDue
+		}
+		if aHasDue && bHasDue && a.SubtaskDueDate != b.SubtaskDueDate {
+			return a.SubtaskDueDate < b.SubtaskDueDate
+		}
+		if a.SubtaskSortDate != b.SubtaskSortDate {
+			return a.SubtaskSortDate < b.SubtaskSortDate
+		}
+		if a.TaskTitle != b.TaskTitle {
+			return a.TaskTitle < b.TaskTitle
+		}
+		if a.TaskID != b.TaskID {
+			return a.TaskID < b.TaskID
+		}
+		return a.SubtaskIndex < b.SubtaskIndex
+	})
+
+	return items
 }
 
 func placeholderFromList(values []string, limit int, sep string) string {

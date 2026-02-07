@@ -598,6 +598,84 @@ body {
   font-size: 0.85rem;
 }
 
+.todo-modal {
+  overflow: hidden;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.todo-modal .modal-header {
+  padding: 1.5rem 2rem 0;
+  margin-bottom: 0;
+}
+
+.todo-body {
+  padding: 1.5rem 2rem 2rem;
+}
+
+.todo-list {
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+.todo-task-group {
+  margin-bottom: 1.25rem;
+}
+
+.todo-empty {
+  text-align: center;
+  color: #999;
+  padding: 2rem;
+}
+
+.todo-task-header {
+  font-weight: 600;
+  margin-top: 1rem;
+  margin-bottom: 0.5rem;
+  color: var(--text-primary);
+  cursor: pointer;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.todo-task-id {
+  font-weight: normal;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.todo-task-assignees {
+  font-weight: normal;
+  color: var(--primary);
+  font-size: 0.85rem;
+  margin-left: 0.5rem;
+}
+
+.todo-subtask {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  margin-left: 1rem;
+  background: var(--bg-primary);
+  border-radius: 4px;
+  margin-bottom: 0.25rem;
+}
+
+.todo-subtask-text {
+  flex: 1;
+}
+
+.todo-due {
+  margin-left: auto;
+  font-size: 0.8rem;
+  color: var(--primary);
+  font-weight: 600;
+}
+
 .diff-view {
   background: var(--bg-primary);
   border: 1px solid var(--border-color);
