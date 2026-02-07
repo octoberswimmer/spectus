@@ -2078,6 +2078,17 @@ func parseTask(id, title, content, status string) Task {
 			}
 		}
 	}
+	// Allow Assigned to live on its own line (no Category present).
+	if len(task.Assignees) == 0 {
+		if match := regexp.MustCompile(`(?m)^\*\*Assigned\*\*:\s*(.+)$`).FindStringSubmatch(content); len(match) > 1 {
+			for _, assignee := range strings.Split(match[1], ",") {
+				trimmed := strings.TrimSpace(assignee)
+				if trimmed != "" {
+					task.Assignees = append(task.Assignees, trimmed)
+				}
+			}
+		}
+	}
 
 	if match := regexp.MustCompile(`\*\*Created\*\*:\s*([\d-]+)`).FindStringSubmatch(content); len(match) > 1 {
 		task.Created = match[1]
