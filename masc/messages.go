@@ -86,6 +86,39 @@ type DeleteFormSubtask struct {
 	Index int
 }
 
+type UpdateDetailSubtaskField struct {
+	Field string
+	Value string
+}
+
+type AddTaskSubtask struct {
+	TaskID  string
+	Text    string
+	DueDate string
+}
+
+type ToggleTaskSubtask struct {
+	TaskID string
+	Index  int
+}
+
+type UpdateTaskSubtaskText struct {
+	TaskID string
+	Index  int
+	Value  string
+}
+
+type UpdateTaskSubtaskDueDate struct {
+	TaskID string
+	Index  int
+	Value  string
+}
+
+type DeleteTaskSubtask struct {
+	TaskID string
+	Index  int
+}
+
 type SaveTask struct{}
 
 type DeleteTask struct {

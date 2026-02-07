@@ -67,6 +67,8 @@ type Program struct {
 	archiveSearch string
 	newSubtaskText string
 	newSubtaskDue  string
+	detailSubtaskText string
+	detailSubtaskDue  string
 }
 
 func NewProgram(cfg ClientConfig) *Program {
@@ -188,6 +190,8 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		switch msg.Mode {
 		case ModalDetail:
 			p.detailTaskID = msg.TaskID
+			p.detailSubtaskText = ""
+			p.detailSubtaskDue = ""
 		case ModalEdit:
 			p.detailTaskID = ""
 			p.form = p.formForTask(msg.TaskID)
@@ -202,6 +206,8 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		p.detailTaskID = ""
 		p.newSubtaskText = ""
 		p.newSubtaskDue = ""
+		p.detailSubtaskText = ""
+		p.detailSubtaskDue = ""
 		return p, nil
 	case UpdateFormField:
 		switch msg.Field {
@@ -227,6 +233,14 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 			p.newSubtaskText = msg.Value
 		case "new_subtask_due":
 			p.newSubtaskDue = msg.Value
+		}
+		return p, nil
+	case UpdateDetailSubtaskField:
+		switch msg.Field {
+		case "text":
+			p.detailSubtaskText = msg.Value
+		case "due":
+			p.detailSubtaskDue = msg.Value
 		}
 		return p, nil
 	case AddFormSubtask:
@@ -257,6 +271,45 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		if msg.Index >= 0 && msg.Index < len(p.form.Subtasks) {
 			p.form.Subtasks = append(p.form.Subtasks[:msg.Index], p.form.Subtasks[msg.Index+1:]...)
 		}
+		return p, nil
+	case AddTaskSubtask:
+		text := strings.TrimSpace(msg.Text)
+		if text == "" {
+			return p, nil
+		}
+		p.updateTaskSubtasks(msg.TaskID, func(task *Task) {
+			task.Subtasks = append(task.Subtasks, Subtask{Text: text, DueDate: normalizeDueDate(msg.DueDate)})
+		})
+		p.detailSubtaskText = ""
+		p.detailSubtaskDue = ""
+		return p, nil
+	case ToggleTaskSubtask:
+		p.updateTaskSubtasks(msg.TaskID, func(task *Task) {
+			if msg.Index >= 0 && msg.Index < len(task.Subtasks) {
+				task.Subtasks[msg.Index].Completed = !task.Subtasks[msg.Index].Completed
+			}
+		})
+		return p, nil
+	case UpdateTaskSubtaskText:
+		p.updateTaskSubtasks(msg.TaskID, func(task *Task) {
+			if msg.Index >= 0 && msg.Index < len(task.Subtasks) {
+				task.Subtasks[msg.Index].Text = msg.Value
+			}
+		})
+		return p, nil
+	case UpdateTaskSubtaskDueDate:
+		p.updateTaskSubtasks(msg.TaskID, func(task *Task) {
+			if msg.Index >= 0 && msg.Index < len(task.Subtasks) {
+				task.Subtasks[msg.Index].DueDate = normalizeDueDate(msg.Value)
+			}
+		})
+		return p, nil
+	case DeleteTaskSubtask:
+		p.updateTaskSubtasks(msg.TaskID, func(task *Task) {
+			if msg.Index >= 0 && msg.Index < len(task.Subtasks) {
+				task.Subtasks = append(task.Subtasks[:msg.Index], task.Subtasks[msg.Index+1:]...)
+			}
+		})
 		return p, nil
 	case SaveTask:
 		return p.handleSaveTask()
@@ -891,8 +944,48 @@ func (p *Program) renderDetailModal(send func(masc.Msg)) masc.ComponentOrHTML {
 									masc.Style("padding", "0"),
 									masc.Style("margin", "0 0 1rem 0"),
 								)},
-								toMarkupChildren(renderDetailSubtasks(task.Subtasks))...,
+								toMarkupChildren(renderDetailSubtasks(task.ID, task.Subtasks, send))...,
 							)...,
+						),
+						elem.Div(
+							masc.Markup(
+								masc.Style("display", "flex"),
+								masc.Style("gap", "0.5rem"),
+								masc.Style("flex-wrap", "wrap"),
+							),
+							elem.Input(masc.Markup(
+								masc.Property("type", "text"),
+								masc.Property("placeholder", "New subtask..."),
+								masc.Property("value", p.detailSubtaskText),
+								masc.Style("flex", "1 1 220px"),
+								masc.Style("padding", "0.5rem"),
+								masc.Style("border", "2px solid #cbd5e0"),
+								masc.Style("border-radius", "4px"),
+								masc.Style("font-size", "0.9rem"),
+								event.Input(func(e *masc.Event) { send(UpdateDetailSubtaskField{Field: "text", Value: e.Target.Get("value").String()}) }),
+								event.KeyDown(func(e *masc.Event) {
+									if e.Get("key").String() == "Enter" {
+										send(AddTaskSubtask{TaskID: task.ID, Text: p.detailSubtaskText, DueDate: p.detailSubtaskDue})
+									}
+								}),
+							)),
+							elem.Input(masc.Markup(
+								masc.Property("type", "date"),
+								masc.Property("value", p.detailSubtaskDue),
+								masc.Style("padding", "0.5rem"),
+								masc.Style("border", "2px solid #cbd5e0"),
+								masc.Style("border-radius", "4px"),
+								masc.Style("font-size", "0.9rem"),
+								masc.Style("background", "white"),
+								masc.Style("min-width", "160px"),
+								event.Input(func(e *masc.Event) { send(UpdateDetailSubtaskField{Field: "due", Value: e.Target.Get("value").String()}) }),
+							)),
+							elem.Button(
+								masc.Markup(masc.Class("btn", "btn-primary"), masc.Style("padding", "0.5rem 1rem"), event.Click(func(e *masc.Event) {
+									send(AddTaskSubtask{TaskID: task.ID, Text: p.detailSubtaskText, DueDate: p.detailSubtaskDue})
+								})),
+								masc.Text("+ Add"),
+							),
 						),
 					),
 					masc.If(task.Notes != "", elem.Div(
@@ -974,19 +1067,11 @@ func detailMetaItem(label, value string, col, row int) masc.ComponentOrHTML {
 	)
 }
 
-func renderDetailSubtasks(subtasks []Subtask) []masc.ComponentOrHTML {
+func renderDetailSubtasks(taskID string, subtasks []Subtask, send func(masc.Msg)) []masc.ComponentOrHTML {
 	items := make([]masc.ComponentOrHTML, 0, len(subtasks))
-	for _, st := range subtasks {
-		textStyle := ""
-		if st.Completed {
-			textStyle = "text-decoration: line-through; color: var(--text-secondary);"
-		}
-		due := ""
-		if st.DueDate != "" {
-			due = st.DueDate
-		}
-
-		content := []masc.MarkupOrChild{
+	for idx, st := range subtasks {
+		index := idx
+		items = append(items, elem.ListItem(
 			masc.Markup(
 				masc.Style("padding", "0.5rem"),
 				masc.Style("margin-bottom", "0.25rem"),
@@ -997,23 +1082,48 @@ func renderDetailSubtasks(subtasks []Subtask) []masc.ComponentOrHTML {
 				masc.Style("gap", "0.5rem"),
 				masc.Style("flex-wrap", "wrap"),
 			),
-			elem.Span(masc.Text(func() string {
-				if st.Completed {
-					return "✅"
-				}
-				return "⬜"
-			}())),
-			elem.Span(masc.Markup(masc.Attribute("style", "flex: 1; "+textStyle)), masc.Text(st.Text)),
-		}
-
-		if due != "" {
-			content = append(content, elem.Span(masc.Markup(
+			elem.Input(masc.Markup(
+				masc.Property("type", "checkbox"),
+				masc.MarkupIf(st.Completed, masc.Property("checked", true)),
+				masc.Style("width", "18px"),
+				masc.Style("height", "18px"),
+				masc.Style("cursor", "pointer"),
+				event.Change(func(e *masc.Event) { send(ToggleTaskSubtask{TaskID: taskID, Index: index}) }),
+			)),
+			elem.Input(masc.Markup(
+				masc.Property("type", "text"),
+				masc.Property("value", st.Text),
+				masc.Style("flex", "1"),
+				masc.Style("min-width", "200px"),
+				masc.Style("border", "none"),
+				masc.Style("background", "transparent"),
+				masc.Style("padding", "0"),
+				masc.Style("font-size", "0.9rem"),
+				masc.Style("outline", "none"),
+				masc.MarkupIf(st.Completed,
+					masc.Style("text-decoration", "line-through"),
+					masc.Style("color", "var(--text-secondary)"),
+				),
+				event.Input(func(e *masc.Event) { send(UpdateTaskSubtaskText{TaskID: taskID, Index: index, Value: e.Target.Get("value").String()}) }),
+			)),
+			elem.Input(masc.Markup(
+				masc.Property("type", "date"),
+				masc.Property("value", st.DueDate),
+				masc.Style("padding", "0.35rem"),
+				masc.Style("border", "1px solid #cbd5e0"),
+				masc.Style("border-radius", "4px"),
 				masc.Style("font-size", "0.85rem"),
-				masc.Style("color", "var(--text-secondary)"),
-			), masc.Text("due "+due)))
-		}
-
-		items = append(items, elem.ListItem(content...))
+				masc.Style("background", "white"),
+				masc.Style("min-width", "140px"),
+				event.Input(func(e *masc.Event) { send(UpdateTaskSubtaskDueDate{TaskID: taskID, Index: index, Value: e.Target.Get("value").String()}) }),
+			)),
+			elem.Button(
+				masc.Markup(masc.Style("background", "none"), masc.Style("border", "none"), masc.Style("cursor", "pointer"), masc.Style("color", "#e53e3e"), masc.Style("font-size", "1.1rem"), masc.Style("padding", "0.25rem"), event.Click(func(e *masc.Event) {
+					send(DeleteTaskSubtask{TaskID: taskID, Index: index})
+				})),
+				masc.Text("🗑️"),
+			),
+		))
 	}
 	return items
 }
@@ -1548,6 +1658,18 @@ func (p *Program) taskIndexByID(taskID string) int {
 		}
 	}
 	return -1
+}
+
+func (p *Program) updateTaskSubtasks(taskID string, update func(*Task)) {
+	idx := p.taskIndexByID(taskID)
+	if idx < 0 {
+		return
+	}
+	task := p.tasks[idx]
+	update(&task)
+	task.Modified = time.Now().Format("2006-01-02")
+	p.tasks[idx] = task
+	p.dirty = true
 }
 
 func (p *Program) archivedIndexByID(taskID string) int {
