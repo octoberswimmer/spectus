@@ -414,7 +414,7 @@ func (p *Program) Render(send func(masc.Msg)) masc.ComponentOrHTML {
 				masc.Style("max-width", "none"),
 				masc.Style("width", "100%"),
 				masc.Style("margin", "2rem 0"),
-				masc.Style("padding", "0 2rem"),
+				masc.Style("padding", "0"),
 			),
 			masc.If(p.loading, elem.Div(masc.Markup(masc.Class("loading")), masc.Text("Loading…"))),
 			masc.If(!p.repoLoaded && !p.loading, p.renderWelcome()),
