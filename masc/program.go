@@ -664,34 +664,43 @@ func (p *Program) renderTaskCard(task Task, send func(masc.Msg)) masc.ComponentO
 	}
 
 	return elem.Div(
-		masc.Markup(masc.Class("task-card")),
+		masc.Markup(
+			masc.Class("task-card"),
+			masc.Style("cursor", "pointer"),
+			event.Click(func(e *masc.Event) {
+				send(OpenModal{Mode: ModalDetail, TaskID: task.ID})
+			}),
+		),
 		elem.Div(
 			masc.Markup(masc.Class("task-header")),
 			elem.Div(masc.Markup(masc.Class("task-id")), masc.Text(task.ID)),
 			elem.Div(
 				masc.Markup(masc.Class("task-actions")),
 				elem.Button(
-					masc.Markup(masc.Class("btn", "btn-ghost"), event.Click(func(e *masc.Event) {
-						send(MoveTaskPosition{TaskID: task.ID, Direction: -1})
-					})),
+					masc.Markup(
+						masc.Class("btn", "btn-ghost"),
+						event.Click(func(e *masc.Event) {
+							send(MoveTaskPosition{TaskID: task.ID, Direction: -1})
+						}).StopPropagation(),
+					),
 					masc.Text("⬆️"),
 				),
 				elem.Button(
-					masc.Markup(masc.Class("btn", "btn-ghost"), event.Click(func(e *masc.Event) {
-						send(MoveTaskPosition{TaskID: task.ID, Direction: 1})
-					})),
+					masc.Markup(
+						masc.Class("btn", "btn-ghost"),
+						event.Click(func(e *masc.Event) {
+							send(MoveTaskPosition{TaskID: task.ID, Direction: 1})
+						}).StopPropagation(),
+					),
 					masc.Text("⬇️"),
 				),
 				elem.Button(
-					masc.Markup(masc.Class("btn", "btn-ghost"), event.Click(func(e *masc.Event) {
-						send(OpenModal{Mode: ModalDetail, TaskID: task.ID})
-					})),
-					masc.Text("👁️"),
-				),
-				elem.Button(
-					masc.Markup(masc.Class("btn", "btn-ghost"), event.Click(func(e *masc.Event) {
-						send(OpenModal{Mode: ModalEdit, TaskID: task.ID})
-					})),
+					masc.Markup(
+						masc.Class("btn", "btn-ghost"),
+						event.Click(func(e *masc.Event) {
+							send(OpenModal{Mode: ModalEdit, TaskID: task.ID})
+						}).StopPropagation(),
+					),
 					masc.Text("✏️"),
 				),
 			),

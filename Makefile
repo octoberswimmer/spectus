@@ -1,5 +1,5 @@
-kanban: build
-	go build -o bin/kanban .
+spectus: build
+	go build -o bin/spectus .
 
 run:
 	go run .
@@ -26,4 +26,4 @@ deps:
 clean:
 	-rm -f static/main.wasm static/wasm_exec.js
 
-.PHONY: build deps clean dev run
+.PHONY: build deps clean dev run spectus

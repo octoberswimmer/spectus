@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AER Sales Kanban</title>
-  <link rel="stylesheet" href="/static/app.css">
-  <script src="/static/wasm_exec.js"></script>
+  <link rel="stylesheet" href="/static/app.css?v={{.StaticVersion}}">
+  <script src="/static/wasm_exec.js?v={{.StaticVersion}}"></script>
 </head>
 <body>
   <div class="background-glow" aria-hidden="true"></div>
@@ -20,7 +20,7 @@
       const resp = await fetch("/session");
       const sessionJSON = resp.ok ? await resp.text() : "";
 
-      const wasmResp = await fetch("/static/main.wasm");
+      const wasmResp = await fetch("/static/main.wasm?v={{.StaticVersion}}");
       if (!wasmResp.ok) {
         const pre = document.createElement('pre');
         pre.innerText = await wasmResp.text();

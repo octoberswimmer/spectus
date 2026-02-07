@@ -304,7 +304,12 @@ body {
   border: 1px solid var(--border-color);
   border-radius: 6px;
   padding: 1rem;
+  cursor: pointer;
   transition: all 0.2s;
+}
+
+.task-card * {
+  cursor: pointer;
 }
 
 .task-card:hover {
@@ -323,6 +328,23 @@ body {
 .task-actions {
   display: flex;
   gap: 0.25rem;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.task-card:hover .task-actions {
+  opacity: 1;
+}
+
+.task-actions .btn {
+  padding: 0.1rem;
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+.task-actions .btn-ghost {
+  border: none;
+  background: transparent;
 }
 
 .task-id {

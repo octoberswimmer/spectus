@@ -5,6 +5,7 @@ import (
 	"errors"
 	"html/template"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,7 +15,8 @@ import (
 )
 
 type indexData struct {
-	ConfigJSON template.JS
+	ConfigJSON    template.JS
+	StaticVersion string
 }
 
 type statePayload struct {
@@ -39,7 +41,10 @@ func (a *App) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	data := indexData{ConfigJSON: cfgJSON}
+	data := indexData{
+		ConfigJSON:    cfgJSON,
+		StaticVersion: strconv.FormatInt(time.Now().Unix(), 10),
+	}
 	if err := a.tmpl.ExecuteTemplate(w, "index.html", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
