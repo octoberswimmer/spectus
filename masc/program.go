@@ -520,15 +520,15 @@ func (p *Program) renderHeader(send func(masc.Msg)) masc.ComponentOrHTML {
 						masc.Text("⚙️ Columns"),
 					),
 				),
-				masc.If(p.repoLoaded,
-					elem.Button(
-						masc.Markup(
-							masc.Class("btn", "btn-primary"),
-							masc.MarkupIf(!p.dirty || p.commitInProgress, masc.Property("disabled", true)),
-							event.Click(func(e *masc.Event) { send(CommitChanges{}) }),
+					masc.If(p.repoLoaded,
+						elem.Button(
+							masc.Markup(
+								masc.Class("btn", "btn-primary"),
+								masc.Property("disabled", !p.dirty || p.commitInProgress),
+								event.Click(func(e *masc.Event) { send(CommitChanges{}) }),
+							),
+							masc.Text("💾 Commit"),
 						),
-						masc.Text("💾 Commit"),
-					),
 				),
 				masc.If(p.loggedIn,
 					elem.Button(
