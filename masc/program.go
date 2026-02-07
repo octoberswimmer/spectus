@@ -15,6 +15,7 @@ import (
 	"github.com/octoberswimmer/masc"
 	"github.com/octoberswimmer/masc/elem"
 	"github.com/octoberswimmer/masc/event"
+	"github.com/octoberswimmer/spectus/internal/markdown"
 )
 
 var idRand = rand.New(rand.NewSource(time.Now().UnixNano()))
@@ -706,7 +707,12 @@ func (p *Program) renderTaskCard(task Task, send func(masc.Msg)) masc.ComponentO
 			),
 		),
 		elem.Div(masc.Markup(masc.Class("task-title")), masc.Text(task.Title)),
-		masc.If(task.Description != "", elem.Div(masc.Markup(masc.Class("task-description")), masc.Text(task.Description))),
+	masc.If(task.Description != "", elem.Div(
+		masc.Markup(
+			masc.Class("task-description"),
+			masc.UnsafeHTML(markdown.ToHTML(task.Description)),
+		),
+	)),
 		elem.Div(
 			append([]masc.MarkupOrChild{masc.Markup(masc.Class("task-meta"))},
 				toMarkupChildren(p.taskMetaItems(task))...,
@@ -777,50 +783,142 @@ func (p *Program) renderDetailModal(send func(masc.Msg)) masc.ComponentOrHTML {
 		return nil
 	}
 
+	statusName := p.statusName(task.Status)
+	metaItems := []masc.ComponentOrHTML{
+		detailMetaItem("Status", statusName, 1, 1),
+	}
+	if task.Category != "" {
+		metaItems = append(metaItems, detailMetaItem("Category", task.Category, 2, 1))
+	}
+	if len(task.Assignees) > 0 {
+		metaItems = append(metaItems, detailMetaItem("Assigned", strings.Join(task.Assignees, ", "), 3, 1))
+	}
+	if task.Created != "" {
+		metaItems = append(metaItems, detailMetaItem("Creation date", task.Created, 1, 2))
+	}
+	if task.Modified != "" {
+		metaItems = append(metaItems, detailMetaItem("Last modified", task.Modified, 2, 2))
+	}
+	if task.Completed != "" {
+		metaItems = append(metaItems, detailMetaItem("Completed", task.Completed, 3, 2))
+	}
+
+	subtaskCompleted := 0
+	for _, st := range task.Subtasks {
+		if st.Completed {
+			subtaskCompleted++
+		}
+	}
+
 	return elem.Div(
 		masc.Markup(masc.Class("modal", "active")),
 		elem.Div(
 			masc.Markup(masc.Class("modal-content")),
 			elem.Div(
-				masc.Markup(masc.Class("modal-header")),
+				masc.Markup(masc.Class("modal-header", "task-detail-header")),
 				elem.Heading2(masc.Text(task.Title)),
-				elem.Button(
-					masc.Markup(masc.Class("close-btn"), event.Click(func(e *masc.Event) { send(CloseModal{Mode: ModalDetail}) })),
-					masc.Text("×"),
+				elem.Div(
+					masc.Markup(masc.Class("task-header-right")),
+					elem.Span(masc.Markup(masc.Class("task-id-badge")), masc.Text(task.ID)),
+					elem.Button(
+						masc.Markup(masc.Class("close-btn"), event.Click(func(e *masc.Event) { send(CloseModal{Mode: ModalDetail}) })),
+						masc.Text("×"),
+					),
 				),
 			),
 			elem.Div(
 				masc.Markup(masc.Class("task-detail")),
 				elem.Div(
-					masc.Markup(masc.Class("summary-card")),
-					elem.Div(masc.Text("Status: "+p.statusName(task.Status))),
-					masc.If(task.Category != "", elem.Div(masc.Text("Category: "+task.Category))),
-					masc.If(len(task.Assignees) > 0, elem.Div(masc.Text("Assigned: "+strings.Join(task.Assignees, ", ")))),
-					masc.If(task.Created != "", elem.Div(masc.Text("Created: "+task.Created))),
-					masc.If(task.Modified != "", elem.Div(masc.Text("Modified: "+task.Modified))),
-					masc.If(task.Completed != "", elem.Div(masc.Text("Finished: "+task.Completed))),
-				),
-				masc.If(len(task.Tags) > 0, elem.Div(
-					masc.Markup(masc.Class("summary-card")),
-					elem.Div(masc.Text("Tags")),
-					elem.Div(toMarkupChildren(p.renderTaskTags(task))...),
-				)),
+					masc.Markup(masc.Style("padding", "1.5rem")),
+					elem.Div(
+						masc.Markup(
+							masc.Style("margin-bottom", "1.5rem"),
+							masc.Style("padding", "1rem"),
+							masc.Style("background", "var(--bg)"),
+							masc.Style("border-radius", "8px"),
+						),
+						elem.Div(
+							append(
+								[]masc.MarkupOrChild{masc.Markup(masc.Class("task-detail-meta"))},
+								toMarkupChildren(metaItems)...,
+							)...,
+						),
+					),
+					masc.If(len(task.Tags) > 0, elem.Div(
+						masc.Markup(masc.Style("margin-bottom", "1.5rem")),
+						elem.Div(masc.Markup(
+							masc.Style("font-size", "0.85rem"),
+							masc.Style("color", "var(--text-secondary)"),
+							masc.Style("margin-bottom", "0.5rem"),
+						), masc.Text("Tags")),
+						elem.Div(
+							append(
+								[]masc.MarkupOrChild{masc.Markup(
+									masc.Style("display", "flex"),
+									masc.Style("gap", "0.5rem"),
+									masc.Style("flex-wrap", "wrap"),
+								)},
+								toMarkupChildren(p.renderTaskTags(task))...,
+							)...,
+						),
+					)),
 					masc.If(task.Description != "", elem.Div(
-						masc.Markup(masc.Class("summary-card")),
-						elem.Div(masc.Text("Description")),
-						elem.Div(masc.Markup(masc.Style("white-space", "pre-wrap")), masc.Text(task.Description)),
+						masc.Markup(masc.Style("margin-bottom", "1.5rem")),
+						elem.Div(masc.Markup(
+							masc.Style("font-size", "0.85rem"),
+							masc.Style("color", "var(--text-secondary)"),
+							masc.Style("margin-bottom", "0.5rem"),
+							masc.Style("font-weight", "600"),
+						), masc.Text("Description")),
+						elem.Div(masc.Markup(
+							masc.Style("line-height", "1.6"),
+							masc.Style("color", "var(--text)"),
+							masc.UnsafeHTML(markdown.ToHTML(task.Description)),
+						)),
 					)),
-					masc.If(len(task.Subtasks) > 0, elem.Div(
-						masc.Markup(masc.Class("summary-card")),
-						elem.Div(masc.Text("Subtasks")),
-						elem.Div(toMarkupChildren(p.renderSubtaskList(task.Subtasks))...),
-					)),
+					elem.Div(
+						masc.Markup(masc.Style("margin-bottom", "1.5rem")),
+						elem.Div(masc.Markup(
+							masc.Style("font-size", "0.85rem"),
+							masc.Style("color", "var(--text-secondary)"),
+							masc.Style("margin-bottom", "0.5rem"),
+							masc.Style("font-weight", "600"),
+						), masc.Text(fmt.Sprintf("Subtasks (%d/%d)", subtaskCompleted, len(task.Subtasks)))),
+						elem.UnorderedList(
+							append(
+								[]masc.MarkupOrChild{masc.Markup(
+									masc.Style("list-style", "none"),
+									masc.Style("padding", "0"),
+									masc.Style("margin", "0 0 1rem 0"),
+								)},
+								toMarkupChildren(renderDetailSubtasks(task.Subtasks))...,
+							)...,
+						),
+					),
 					masc.If(task.Notes != "", elem.Div(
-						masc.Markup(masc.Class("summary-card")),
-						elem.Div(masc.Text("Notes")),
-						elem.Div(masc.Markup(masc.Style("white-space", "pre-wrap")), masc.Text(task.Notes)),
+						masc.Markup(
+							masc.Style("margin-top", "1.5rem"),
+							masc.Style("padding-top", "1.5rem"),
+							masc.Style("border-top", "1px solid #e2e8f0"),
+						),
+						elem.Div(masc.Markup(
+							masc.Style("font-size", "0.85rem"),
+							masc.Style("color", "var(--text-secondary)"),
+							masc.Style("margin-bottom", "0.75rem"),
+							masc.Style("font-weight", "600"),
+						), masc.Text("Notes")),
+						elem.Div(masc.Markup(
+							masc.Style("line-height", "1.7"),
+							masc.Style("color", "var(--text)"),
+							masc.Style("background", "var(--bg)"),
+							masc.Style("padding", "1rem"),
+							masc.Style("border-radius", "8px"),
+							masc.Style("border-left", "4px solid var(--primary)"),
+							masc.UnsafeHTML(markdown.ToHTML(task.Notes)),
+						)),
 					)),
 				),
+			),
 			elem.Div(
 				masc.Markup(masc.Class("actions")),
 				elem.Button(
@@ -859,6 +957,67 @@ func (p *Program) renderSubtaskList(subtasks []Subtask) []masc.ComponentOrHTML {
 	}
 	return items
 }
+
+func detailMetaItem(label, value string, col, row int) masc.ComponentOrHTML {
+	return elem.Div(
+		masc.Markup(
+			masc.Class("task-detail-meta-item"),
+			masc.Style("grid-column", fmt.Sprintf("%d", col)),
+			masc.Style("grid-row", fmt.Sprintf("%d", row)),
+		),
+		elem.Div(masc.Markup(
+			masc.Style("font-size", "0.85rem"),
+			masc.Style("color", "var(--text-secondary)"),
+			masc.Style("margin-bottom", "0.25rem"),
+		), masc.Text(label)),
+		elem.Div(masc.Markup(masc.Style("font-weight", "500")), masc.Text(value)),
+	)
+}
+
+func renderDetailSubtasks(subtasks []Subtask) []masc.ComponentOrHTML {
+	items := make([]masc.ComponentOrHTML, 0, len(subtasks))
+	for _, st := range subtasks {
+		textStyle := ""
+		if st.Completed {
+			textStyle = "text-decoration: line-through; color: var(--text-secondary);"
+		}
+		due := ""
+		if st.DueDate != "" {
+			due = st.DueDate
+		}
+
+		content := []masc.MarkupOrChild{
+			masc.Markup(
+				masc.Style("padding", "0.5rem"),
+				masc.Style("margin-bottom", "0.25rem"),
+				masc.Style("background", "var(--bg)"),
+				masc.Style("border-radius", "4px"),
+				masc.Style("display", "flex"),
+				masc.Style("align-items", "center"),
+				masc.Style("gap", "0.5rem"),
+				masc.Style("flex-wrap", "wrap"),
+			),
+			elem.Span(masc.Text(func() string {
+				if st.Completed {
+					return "✅"
+				}
+				return "⬜"
+			}())),
+			elem.Span(masc.Markup(masc.Attribute("style", "flex: 1; "+textStyle)), masc.Text(st.Text)),
+		}
+
+		if due != "" {
+			content = append(content, elem.Span(masc.Markup(
+				masc.Style("font-size", "0.85rem"),
+				masc.Style("color", "var(--text-secondary)"),
+			), masc.Text("due "+due)))
+		}
+
+		items = append(items, elem.ListItem(content...))
+	}
+	return items
+}
+
 
 func (p *Program) renderEditModal(send func(masc.Msg)) masc.ComponentOrHTML {
 	form := p.form
