@@ -108,6 +108,9 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		p.status = "Loading repositories…"
 		return p, p.fetchReposCmd()
 	case ReposLoaded:
+		if msg.Unauthorized {
+			return p.handleUnauthorized()
+		}
 		p.loading = false
 		if msg.Error != "" {
 			p.error = msg.Error
@@ -131,6 +134,9 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		p.status = "Loading repository…"
 		return p, masc.Batch(p.saveRepoSelectionCmd(selected), p.loadRepoCmd())
 	case LoadError:
+		if msg.Unauthorized {
+			return p.handleUnauthorized()
+		}
 		p.loading = false
 		p.commitInProgress = false
 		p.error = msg.Error
@@ -186,6 +192,9 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		p.commitDiff = buildCommitDiff(p.repo, p.lastSavedKanban, p.lastSavedArchive, p.generateKanbanMarkdown(), p.generateArchiveMarkdown())
 		return p, nil
 	case CommitResult:
+		if msg.Unauthorized {
+			return p.handleUnauthorized()
+		}
 		p.commitInProgress = false
 		if msg.Error != "" {
 			p.error = msg.Error
@@ -510,13 +519,13 @@ func (p *Program) Render(send func(masc.Msg)) masc.ComponentOrHTML {
 				masc.Style("margin", "2rem 0"),
 				masc.Style("padding", "0"),
 			),
-			masc.If(p.loading, elem.Div(masc.Markup(masc.Class("loading")), masc.Text("Loading…"))),
 			masc.If(!p.repoLoaded && !p.loading && p.repoInstallRequired, p.renderRepoInstallPrompt()),
 			masc.If(!p.repoLoaded && !p.loading && !p.repoInstallRequired, p.renderWelcome()),
 			masc.If(p.repoLoaded, p.renderBoard(send)),
 			masc.If(p.error != "", p.renderError()),
-			masc.If(p.status != "", p.renderStatus()),
 		),
+		p.renderLoadingOverlay(),
+		p.renderNotification(),
 		p.renderModal(send),
 	)
 }
@@ -530,6 +539,7 @@ func (p *Program) handleSession(msg SetSession) (masc.Model, masc.Cmd) {
 		p.loggedIn = false
 		p.token = ""
 		p.repoLoaded = false
+		p.loading = false
 		return p, nil
 	}
 	p.loggedIn = true
@@ -541,13 +551,29 @@ func (p *Program) handleSession(msg SetSession) (masc.Model, masc.Cmd) {
 	return p, p.fetchViewerCmd()
 }
 
+func (p *Program) handleUnauthorized() (masc.Model, masc.Cmd) {
+	p.loggedIn = false
+	p.token = ""
+	p.repoLoaded = false
+	p.loading = false
+	p.commitInProgress = false
+	p.repos = nil
+	p.repoInstallRequired = false
+	p.selectedRepo = ""
+	p.viewer = User{}
+	p.modal = ModalNone
+	p.error = "GitHub session expired. Please log in again."
+	p.status = ""
+	return p, clearSessionCmd()
+}
+
 func (p *Program) fetchViewerCmd() masc.Cmd {
 	token := p.token
 	return func() masc.Msg {
 		client := &GraphQLClient{Token: token}
 		viewer, err := fetchViewer(client)
 		if err != nil {
-			return LoadError{Error: err.Error()}
+			return LoadError{Error: err.Error(), Unauthorized: isUnauthorized(err)}
 		}
 		return ViewerLoaded{Viewer: viewer}
 	}
@@ -558,7 +584,7 @@ func (p *Program) fetchReposCmd() masc.Cmd {
 	return func() masc.Msg {
 		repos, err := fetchAccessibleRepos(token)
 		if err != nil {
-			return ReposLoaded{Error: err.Error()}
+			return ReposLoaded{Error: err.Error(), Unauthorized: isUnauthorized(err)}
 		}
 		return ReposLoaded{Repos: repos}
 	}
@@ -582,7 +608,7 @@ func (p *Program) loadRepoCmd() masc.Cmd {
 		client := &GraphQLClient{Token: token}
 		files, err := fetchRepoFiles(client, owner, name, kanbanPath, archivePath)
 		if err != nil {
-			return LoadError{Error: err.Error()}
+			return LoadError{Error: err.Error(), Unauthorized: isUnauthorized(err)}
 		}
 		repo := RepoSelection{
 			Owner:       owner,
@@ -673,7 +699,7 @@ func (p *Program) commitCmd(message string, files map[string]string) masc.Cmd {
 		client := &GraphQLClient{Token: token}
 		result, err := commitRepoFiles(client, repoName, branch, headOID, commitMessage, files)
 		if err != nil {
-			return CommitResult{Error: err.Error()}
+			return CommitResult{Error: err.Error(), Unauthorized: isUnauthorized(err)}
 		}
 		return CommitResult{URL: result.URL, OID: result.OID}
 	}
@@ -688,6 +714,12 @@ func (p *Program) renderLogin(send func(masc.Msg)) masc.ComponentOrHTML {
 				masc.Markup(masc.Class("summary-card")),
 				elem.Heading2(masc.Text("Connect GitHub")),
 				elem.Paragraph(masc.Text("This app uses GitHub OAuth and commits markdown updates directly to your repository.")),
+				masc.If(p.error != "",
+					elem.Paragraph(
+						masc.Markup(masc.Class("form-warning")),
+						masc.Text(p.error),
+					),
+				),
 				elem.Div(
 					masc.Markup(masc.Class("actions")),
 					elem.Anchor(
@@ -2015,10 +2047,10 @@ func (p *Program) renderCommitModal(send func(masc.Msg)) masc.ComponentOrHTML {
 			elem.Div(
 				masc.Markup(masc.Class("form-group")),
 				elem.Label(masc.Text("Diff")),
-				elem.Preformatted(
-					masc.Markup(masc.Class("diff-view")),
-					masc.Text(diffText),
-				),
+				elem.Preformatted(append(
+					[]masc.MarkupOrChild{masc.Markup(masc.Class("diff-view"))},
+					renderDiffLines(diffText)...,
+				)...),
 			),
 			elem.Div(
 				masc.Markup(masc.Class("actions")),
@@ -2037,6 +2069,39 @@ func (p *Program) renderCommitModal(send func(masc.Msg)) masc.ComponentOrHTML {
 			),
 		),
 	)
+}
+
+func renderDiffLines(diffText string) []masc.MarkupOrChild {
+	diffText = strings.ReplaceAll(diffText, "\r\n", "\n")
+	lines := strings.Split(diffText, "\n")
+	out := make([]masc.MarkupOrChild, 0, len(lines))
+	for _, line := range lines {
+		class := diffLineClass(line)
+		display := line
+		if display == "" {
+			display = " "
+		}
+		out = append(out, elem.Span(
+			masc.Markup(masc.Class("diff-line", class)),
+			masc.Text(display),
+		))
+	}
+	return out
+}
+
+func diffLineClass(line string) string {
+	switch {
+	case strings.HasPrefix(line, "@@"):
+		return "diff-hunk"
+	case strings.HasPrefix(line, "+++ ") || strings.HasPrefix(line, "--- "):
+		return "diff-file"
+	case strings.HasPrefix(line, "+"):
+		return "diff-add"
+	case strings.HasPrefix(line, "-"):
+		return "diff-del"
+	default:
+		return "diff-context"
+	}
 }
 
 type todoItem struct {
@@ -2319,11 +2384,42 @@ func (p *Program) renderStatus() masc.ComponentOrHTML {
 	)
 }
 
+func (p *Program) renderLoadingOverlay() masc.ComponentOrHTML {
+	if !p.loading {
+		return nil
+	}
+	return elem.Div(
+		masc.Markup(masc.Class("loading-overlay")),
+		elem.Div(
+			masc.Markup(masc.Class("loading")),
+			masc.Text("Loading…"),
+		),
+	)
+}
+
 func (p *Program) renderNotification() masc.ComponentOrHTML {
 	if p.error != "" {
 		return elem.Div(masc.Markup(masc.Class("notification", "error", "show")), masc.Text(p.error))
 	}
-	if p.status != "" {
+	if p.status != "" && !p.loading {
+		const commitPrefix = "Committed: "
+		if strings.HasPrefix(p.status, commitPrefix) {
+			url := strings.TrimSpace(strings.TrimPrefix(p.status, commitPrefix))
+			if url != "" {
+				return elem.Div(
+					masc.Markup(masc.Class("notification", "success", "show")),
+					elem.Span(masc.Text("Committed: ")),
+					elem.Anchor(
+						masc.Markup(
+							masc.Attribute("href", url),
+							masc.Attribute("target", "_blank"),
+							masc.Attribute("rel", "noreferrer"),
+						),
+						masc.Text(url),
+					),
+				)
+			}
+		}
 		return elem.Div(masc.Markup(masc.Class("notification", "success", "show")), masc.Text(p.status))
 	}
 	return nil
@@ -3397,6 +3493,14 @@ func logoutCmd() masc.Cmd {
 		options := map[string]interface{}{"method": "POST"}
 		_, _ = awaitPromise(js.Global().Call("fetch", "/logout", js.ValueOf(options)))
 		js.Global().Get("location").Call("reload")
+		return nil
+	}
+}
+
+func clearSessionCmd() masc.Cmd {
+	return func() masc.Msg {
+		options := map[string]interface{}{"method": "POST"}
+		_, _ = awaitPromise(js.Global().Call("fetch", "/logout", js.ValueOf(options)))
 		return nil
 	}
 }

@@ -4,6 +4,7 @@ go 1.25.6
 
 require (
 	github.com/gorilla/securecookie v1.1.2
+	github.com/hexops/gotextdiff v1.0.3
 	github.com/octoberswimmer/masc v0.6.1
 	golang.org/x/oauth2 v0.34.0
 )

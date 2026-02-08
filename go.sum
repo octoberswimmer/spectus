@@ -21,6 +21,8 @@ github.com/gost-dom/fixture v0.1.0 h1:7PnEpkuww1QBOh4gyoR8updPfyosHJfxmFRY+2t05+
 github.com/gost-dom/fixture v0.1.0/go.mod h1:7mSGaBhOfi/NO+YiD426CQ1DTkko62vYxoSVRmveqqY=
 github.com/gost-dom/v8go v0.0.0-20250226155312-422158da51fa h1:3aeBc/+rftAe2hHJy1YvUXI90qCQpmep2n26N+Ljhl4=
 github.com/gost-dom/v8go v0.0.0-20250226155312-422158da51fa/go.mod h1:JQOTnkUY77lDSgrMlPMlUCLONzDS/kycRc8ZtbiZDm0=
+github.com/hexops/gotextdiff v1.0.3 h1:gitA9+qJrrTCsiCl7+kh75nPqQt1cx4ZkudSTLoUqJM=
+github.com/hexops/gotextdiff v1.0.3/go.mod h1:pSWU5MAI3yDq+fZBTazCSJysOMbxWL1BSow5/V2vxeg=
 github.com/octoberswimmer/masc v0.6.1 h1:HNY4qosd4iLHbU5vzVlFQMgcwoMdhkiBS+poxTb71FI=
 github.com/octoberswimmer/masc v0.6.1/go.mod h1:sPVvq++7sTVXhZ6//R/xdBqI90w/StI+qS0TMnZAU1c=
 github.com/onsi/ginkgo/v2 v2.22.2 h1:/3X8Panh8/WwhU/3Ssa6rCKqPLuAkVY2I0RoyDLySlU=

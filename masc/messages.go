@@ -11,7 +11,8 @@ type ViewerLoaded struct {
 }
 
 type LoadError struct {
-	Error string
+	Error        string
+	Unauthorized bool
 }
 
 type RepoLoaded struct {
@@ -29,14 +30,16 @@ type LoadRepo struct{}
 type CommitChanges struct{}
 
 type CommitResult struct {
-	URL   string
-	OID   string
-	Error string
+	URL          string
+	OID          string
+	Error        string
+	Unauthorized bool
 }
 
 type ReposLoaded struct {
-	Repos []RepoOption
-	Error string
+	Repos        []RepoOption
+	Error        string
+	Unauthorized bool
 }
 
 type SelectRepo struct {

@@ -60,7 +60,12 @@ func (c *GraphQLClient) Query(query string, variables map[string]interface{}, ou
 	}
 	text := textValue.String()
 	if !ok {
-		return fmt.Errorf("graphql status %d: %s", respValue.Get("status").Int(), strings.TrimSpace(text))
+		status := respValue.Get("status").Int()
+		message := fmt.Sprintf("graphql status %d: %s", status, strings.TrimSpace(text))
+		if status == 401 {
+			return newUnauthorizedError(message)
+		}
+		return fmt.Errorf(message)
 	}
 
 	var envelope graphQLResponse
@@ -68,7 +73,11 @@ func (c *GraphQLClient) Query(query string, variables map[string]interface{}, ou
 		return err
 	}
 	if len(envelope.Errors) > 0 {
-		return errors.New(envelope.Errors[0].Message)
+		message := envelope.Errors[0].Message
+		if isUnauthorizedMessage(message) {
+			return newUnauthorizedError(message)
+		}
+		return errors.New(message)
 	}
 	if out != nil {
 		return json.Unmarshal(envelope.Data, out)

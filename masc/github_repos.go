@@ -39,7 +39,12 @@ func (c *restClient) Get(path string, out interface{}) error {
 	}
 	text := textValue.String()
 	if !ok {
-		return fmt.Errorf("github api status %d: %s", respValue.Get("status").Int(), strings.TrimSpace(text))
+		status := respValue.Get("status").Int()
+		message := fmt.Sprintf("github api status %d: %s", status, strings.TrimSpace(text))
+		if status == 401 {
+			return newUnauthorizedError(message)
+		}
+		return fmt.Errorf(message)
 	}
 	if out == nil {
 		return nil
