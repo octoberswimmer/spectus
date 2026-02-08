@@ -70,6 +70,7 @@ type Program struct {
 	dirty            bool
 	error            string
 	status           string
+	statusSeq        int
 
 	filters []Filter
 	search  string
@@ -105,8 +106,8 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		p.viewer = msg.Viewer
 		p.loading = true
 		p.error = ""
-		p.status = "Loading repositories…"
-		return p, p.fetchReposCmd()
+		statusCmd := p.setStatus("Loading repositories…", false)
+		return p, batchCmds(statusCmd, p.fetchReposCmd())
 	case ReposLoaded:
 		if msg.Unauthorized {
 			return p.handleUnauthorized()
@@ -120,7 +121,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		p.repoInstallRequired = len(p.repos) == 0
 		if p.repoInstallRequired {
 			p.error = ""
-			p.status = ""
+			p.setStatus("", false)
 			return p, nil
 		}
 		selected := p.resolveSelectedRepo()
@@ -131,8 +132,8 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		p.repoInstallRequired = false
 		p.selectedRepo = selected
 		p.loading = true
-		p.status = "Loading repository…"
-		return p, masc.Batch(p.saveRepoSelectionCmd(selected), p.loadRepoCmd())
+		statusCmd := p.setStatus("Loading repository…", false)
+		return p, batchCmds(statusCmd, p.saveRepoSelectionCmd(selected), p.loadRepoCmd())
 	case LoadError:
 		if msg.Unauthorized {
 			return p.handleUnauthorized()
@@ -150,14 +151,14 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 			return p, nil
 		}
 		p.error = ""
-		p.status = "Loading repository…"
+		statusCmd := p.setStatus("Loading repository…", false)
 		p.loading = true
-		return p, p.loadRepoCmd()
+		return p, batchCmds(statusCmd, p.loadRepoCmd())
 	case RepoLoaded:
 		p.loading = false
 		p.commitInProgress = false
 		p.error = ""
-		p.status = "Repository loaded."
+		statusCmd := p.setStatus("Repository loaded.", true)
 		p.repo = msg.Repo
 		p.selectedRepo = msg.Repo.Repo
 		p.branch = msg.Branch
@@ -181,7 +182,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		p.lastSavedArchive = msg.ArchiveContent
 
 		p.dirty = msg.MissingKanban || msg.MissingArchive
-		return p, nil
+		return p, statusCmd
 	case CommitChanges:
 		if !p.repoLoaded || p.commitInProgress || !p.hasPendingCommitChanges() {
 			return p, nil
@@ -211,9 +212,13 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 			p.headOID = msg.OID
 		}
 		if msg.URL != "" {
-			p.status = "Committed: " + msg.URL
+			return p, p.setStatus("Committed: "+msg.URL, true)
 		} else {
-			p.status = "Commit saved."
+			return p, p.setStatus("Commit saved.", true)
+		}
+	case ClearStatus:
+		if msg.Seq == p.statusSeq {
+			p.status = ""
 		}
 		return p, nil
 	case UpdateSearch:
@@ -318,9 +323,9 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		p.selectedRepo = selected
 		p.loading = true
 		p.error = ""
-		p.status = "Loading repository…"
+		statusCmd := p.setStatus("Loading repository…", false)
 		p.repoLoaded = false
-		return p, masc.Batch(p.saveRepoSelectionCmd(selected), p.loadRepoCmd())
+		return p, batchCmds(statusCmd, p.saveRepoSelectionCmd(selected), p.loadRepoCmd())
 	case RepoSelectionSaved:
 		if msg.Error != "" {
 			p.error = msg.Error
@@ -352,7 +357,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		}
 		p.commitInProgress = true
 		p.error = ""
-		p.status = "Committing changes…"
+		statusCmd := p.setStatus("Committing changes…", false)
 		p.modal = ModalNone
 		p.pendingCommitKanban = p.generateKanbanMarkdown()
 		p.pendingCommitArchive = p.generateArchiveMarkdown()
@@ -360,7 +365,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 			p.repo.KanbanPath:  p.pendingCommitKanban,
 			p.repo.ArchivePath: p.pendingCommitArchive,
 		}
-		return p, p.commitCmd(strings.TrimSpace(msg.Message), files)
+		return p, batchCmds(statusCmd, p.commitCmd(strings.TrimSpace(msg.Message), files))
 	case UpdateDetailSubtaskField:
 		switch msg.Field {
 		case "text":
@@ -441,13 +446,13 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		return p.handleSaveTask()
 	case DeleteTask:
 		p.deleteTaskByID(msg.TaskID)
-		return p, nil
+		return p, p.setStatus("Task deleted.", true)
 	case ArchiveTask:
 		p.archiveTask(msg.TaskID)
-		return p, nil
+		return p, p.setStatus("Task archived.", true)
 	case RestoreTask:
 		p.restoreTask(msg.TaskID)
-		return p, nil
+		return p, p.setStatus("Task restored.", true)
 	case MoveTaskPosition:
 		p.moveTaskWithinColumn(msg.TaskID, msg.Direction)
 		return p, nil
@@ -540,6 +545,7 @@ func (p *Program) handleSession(msg SetSession) (masc.Model, masc.Cmd) {
 		p.token = ""
 		p.repoLoaded = false
 		p.loading = false
+		p.setStatus("", false)
 		return p, nil
 	}
 	p.loggedIn = true
@@ -547,7 +553,7 @@ func (p *Program) handleSession(msg SetSession) (masc.Model, masc.Cmd) {
 	p.selectedRepo = strings.TrimSpace(session.SelectedRepo)
 	p.loading = true
 	p.error = ""
-	p.status = ""
+	p.setStatus("", false)
 	return p, p.fetchViewerCmd()
 }
 
@@ -563,7 +569,7 @@ func (p *Program) handleUnauthorized() (masc.Model, masc.Cmd) {
 	p.viewer = User{}
 	p.modal = ModalNone
 	p.error = "GitHub session expired. Please log in again."
-	p.status = ""
+	p.setStatus("", false)
 	return p, clearSessionCmd()
 }
 
@@ -2384,6 +2390,19 @@ func (p *Program) renderStatus() masc.ComponentOrHTML {
 	)
 }
 
+func (p *Program) setStatus(message string, autoClear bool) masc.Cmd {
+	p.statusSeq++
+	p.status = message
+	if message == "" || !autoClear {
+		return nil
+	}
+	seq := p.statusSeq
+	return func() masc.Msg {
+		time.Sleep(5 * time.Second)
+		return ClearStatus{Seq: seq}
+	}
+}
+
 func (p *Program) renderLoadingOverlay() masc.ComponentOrHTML {
 	if !p.loading {
 		return nil
@@ -2460,7 +2479,11 @@ func (p *Program) handleSaveTask() (masc.Model, masc.Cmd) {
 		task.Subtasks = form.Subtasks
 		task.Notes = strings.TrimSpace(form.Notes)
 		p.tasks[idx] = task
-		p.status = "Task updated."
+		statusCmd := p.setStatus("Task updated.", true)
+		p.dirty = true
+		p.modal = ModalNone
+		p.form = TaskForm{}
+		return p, statusCmd
 	} else {
 		newTask := Task{
 			ID:          generateTaskID(),
@@ -2477,13 +2500,12 @@ func (p *Program) handleSaveTask() (masc.Model, masc.Cmd) {
 			Notes:       strings.TrimSpace(form.Notes),
 		}
 		p.tasks = append(p.tasks, newTask)
-		p.status = "Task created."
+		statusCmd := p.setStatus("Task created.", true)
+		p.dirty = true
+		p.modal = ModalNone
+		p.form = TaskForm{}
+		return p, statusCmd
 	}
-
-	p.dirty = true
-	p.modal = ModalNone
-	p.form = TaskForm{}
-	return p, nil
 }
 
 func (p *Program) deleteTaskByID(taskID string) {
@@ -2493,7 +2515,6 @@ func (p *Program) deleteTaskByID(taskID string) {
 	}
 	p.tasks = append(p.tasks[:idx], p.tasks[idx+1:]...)
 	p.dirty = true
-	p.status = "Task deleted."
 	p.modal = ModalNone
 }
 
@@ -2506,7 +2527,6 @@ func (p *Program) archiveTask(taskID string) {
 	p.tasks = append(p.tasks[:idx], p.tasks[idx+1:]...)
 	p.archived = append(p.archived, task)
 	p.dirty = true
-	p.status = "Task archived."
 	p.modal = ModalNone
 }
 
@@ -2522,7 +2542,6 @@ func (p *Program) restoreTask(taskID string) {
 	}
 	p.tasks = append(p.tasks, task)
 	p.dirty = true
-	p.status = "Task restored."
 }
 
 func (p *Program) moveTaskWithinColumn(taskID string, direction int) {
@@ -3503,4 +3522,20 @@ func clearSessionCmd() masc.Cmd {
 		_, _ = awaitPromise(js.Global().Call("fetch", "/logout", js.ValueOf(options)))
 		return nil
 	}
+}
+
+func batchCmds(cmds ...masc.Cmd) masc.Cmd {
+	filtered := make([]masc.Cmd, 0, len(cmds))
+	for _, cmd := range cmds {
+		if cmd != nil {
+			filtered = append(filtered, cmd)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	if len(filtered) == 1 {
+		return filtered[0]
+	}
+	return masc.Batch(filtered...)
 }

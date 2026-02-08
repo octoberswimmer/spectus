@@ -85,6 +85,10 @@ type UpdateCommitMessage struct {
 	Value string
 }
 
+type ClearStatus struct {
+	Seq int
+}
+
 type SetTagSuggestionsOpen struct {
 	Open bool
 }
