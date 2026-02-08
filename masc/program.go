@@ -37,7 +37,8 @@ type TaskForm struct {
 type Program struct {
 	masc.Core
 
-	cfg ClientConfig
+	cfg           ClientConfig
+	appInstallURL string
 
 	token    string
 	loggedIn bool
@@ -48,18 +49,21 @@ type Program struct {
 	headOID    string
 	repoLoaded bool
 
-	config   BoardConfig
-	tasks    []Task
-	archived []Task
+	config              BoardConfig
+	tasks               []Task
+	archived            []Task
+	repos               []RepoOption
+	selectedRepo        string
+	repoInstallRequired bool
 
 	lastSavedKanban  string
 	lastSavedArchive string
 
-	commitMessageDraft string
-	commitDiff          string
-	pendingCommitKanban string
+	commitMessageDraft   string
+	commitDiff           string
+	pendingCommitKanban  string
 	pendingCommitArchive string
-	tagSuggestionsOpen bool
+	tagSuggestionsOpen   bool
 
 	loading          bool
 	commitInProgress bool
@@ -70,19 +74,20 @@ type Program struct {
 	filters []Filter
 	search  string
 
-	modal        ModalMode
-	detailTaskID string
-	form         TaskForm
-	archiveSearch string
-	newSubtaskText string
-	newSubtaskDue  string
+	modal             ModalMode
+	detailTaskID      string
+	form              TaskForm
+	archiveSearch     string
+	newSubtaskText    string
+	newSubtaskDue     string
 	detailSubtaskText string
 	detailSubtaskDue  string
 }
 
 func NewProgram(cfg ClientConfig) *Program {
 	return &Program{
-		cfg: cfg,
+		cfg:           cfg,
+		appInstallURL: strings.TrimSpace(cfg.AppInstallURL),
 	}
 }
 
@@ -96,13 +101,33 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		return p.handleSession(msg)
 	case ViewerLoaded:
 		p.viewer = msg.Viewer
-		if strings.TrimSpace(p.cfg.DefaultRepo) == "" {
-			p.loading = false
-			p.error = "Repository is not configured."
+		p.loading = true
+		p.error = ""
+		p.status = "Loading repositories…"
+		return p, p.fetchReposCmd()
+	case ReposLoaded:
+		p.loading = false
+		if msg.Error != "" {
+			p.error = msg.Error
 			return p, nil
 		}
+		p.repos = msg.Repos
+		p.repoInstallRequired = len(p.repos) == 0
+		if p.repoInstallRequired {
+			p.error = ""
+			p.status = ""
+			return p, nil
+		}
+		selected := p.resolveSelectedRepo()
+		if selected == "" {
+			p.error = "No repositories available for this GitHub App installation."
+			return p, nil
+		}
+		p.repoInstallRequired = false
+		p.selectedRepo = selected
 		p.loading = true
-		return p, p.loadRepoCmd()
+		p.status = "Loading repository…"
+		return p, masc.Batch(p.saveRepoSelectionCmd(selected), p.loadRepoCmd())
 	case LoadError:
 		p.loading = false
 		p.commitInProgress = false
@@ -112,8 +137,8 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		if p.loading {
 			return p, nil
 		}
-		if strings.TrimSpace(p.cfg.DefaultRepo) == "" {
-			p.error = "Repository is not configured."
+		if strings.TrimSpace(p.repoToLoad()) == "" {
+			p.error = "No repository selected."
 			return p, nil
 		}
 		p.error = ""
@@ -126,6 +151,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		p.error = ""
 		p.status = "Repository loaded."
 		p.repo = msg.Repo
+		p.selectedRepo = msg.Repo.Repo
 		p.branch = msg.Branch
 		p.headOID = msg.HeadOID
 		p.repoLoaded = true
@@ -223,6 +249,17 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 			p.commitDiff = buildCommitDiff(p.repo, p.lastSavedKanban, p.lastSavedArchive, p.generateKanbanMarkdown(), p.generateArchiveMarkdown())
 		}
 		return p, nil
+	case OpenDetailFromTodo:
+		p.modal = ModalNone
+		p.detailTaskID = ""
+		p.newSubtaskText = ""
+		p.newSubtaskDue = ""
+		p.detailSubtaskText = ""
+		p.detailSubtaskDue = ""
+		p.tagSuggestionsOpen = false
+		return p, func() masc.Msg {
+			return OpenModal{Mode: ModalDetail, TaskID: msg.TaskID}
+		}
 	case CloseModal:
 		p.modal = ModalNone
 		p.detailTaskID = ""
@@ -262,6 +299,31 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 	case UpdateCommitMessage:
 		p.commitMessageDraft = msg.Value
 		return p, nil
+	case SelectRepo:
+		selected := strings.TrimSpace(msg.FullName)
+		if selected == "" || selected == p.selectedRepo {
+			return p, nil
+		}
+		p.selectedRepo = selected
+		p.loading = true
+		p.error = ""
+		p.status = "Loading repository…"
+		p.repoLoaded = false
+		return p, masc.Batch(p.saveRepoSelectionCmd(selected), p.loadRepoCmd())
+	case RepoSelectionSaved:
+		if msg.Error != "" {
+			p.error = msg.Error
+		}
+		return p, nil
+	case OpenInstallURL:
+		if strings.TrimSpace(p.appInstallURL) == "" {
+			return p, nil
+		}
+		url := p.appInstallURL
+		return p, func() masc.Msg {
+			js.Global().Call("open", url, "_blank")
+			return nil
+		}
 	case SetTagSuggestionsOpen:
 		p.tagSuggestionsOpen = msg.Open
 		return p, nil
@@ -417,7 +479,8 @@ func (p *Program) Render(send func(masc.Msg)) masc.ComponentOrHTML {
 				masc.Style("padding", "0"),
 			),
 			masc.If(p.loading, elem.Div(masc.Markup(masc.Class("loading")), masc.Text("Loading…"))),
-			masc.If(!p.repoLoaded && !p.loading, p.renderWelcome()),
+			masc.If(!p.repoLoaded && !p.loading && p.repoInstallRequired, p.renderRepoInstallPrompt()),
+			masc.If(!p.repoLoaded && !p.loading && !p.repoInstallRequired, p.renderWelcome()),
 			masc.If(p.repoLoaded, p.renderBoard(send)),
 			masc.If(p.error != "", p.renderError()),
 			masc.If(p.status != "", p.renderStatus()),
@@ -439,6 +502,7 @@ func (p *Program) handleSession(msg SetSession) (masc.Model, masc.Cmd) {
 	}
 	p.loggedIn = true
 	p.token = session.AccessToken
+	p.selectedRepo = strings.TrimSpace(session.SelectedRepo)
 	p.loading = true
 	p.error = ""
 	p.status = ""
@@ -457,8 +521,19 @@ func (p *Program) fetchViewerCmd() masc.Cmd {
 	}
 }
 
+func (p *Program) fetchReposCmd() masc.Cmd {
+	token := p.token
+	return func() masc.Msg {
+		repos, err := fetchAccessibleRepos(token)
+		if err != nil {
+			return ReposLoaded{Error: err.Error()}
+		}
+		return ReposLoaded{Repos: repos}
+	}
+}
+
 func (p *Program) loadRepoCmd() masc.Cmd {
-	owner, name, repoName, err := splitRepo(strings.TrimSpace(p.cfg.DefaultRepo))
+	owner, name, repoName, err := splitRepo(strings.TrimSpace(p.repoToLoad()))
 	if err != nil {
 		return func() masc.Msg { return LoadError{Error: err.Error()} }
 	}
@@ -494,6 +569,62 @@ func (p *Program) loadRepoCmd() masc.Cmd {
 			MissingKanban:  files.MissingKanban,
 			MissingArchive: files.MissingArchive,
 		}
+	}
+}
+
+func (p *Program) repoToLoad() string {
+	if strings.TrimSpace(p.selectedRepo) != "" {
+		return p.selectedRepo
+	}
+	return strings.TrimSpace(p.cfg.DefaultRepo)
+}
+
+func (p *Program) resolveSelectedRepo() string {
+	if candidate := strings.TrimSpace(p.selectedRepo); candidate != "" && p.repoInList(candidate) {
+		return candidate
+	}
+	if candidate := strings.TrimSpace(p.cfg.DefaultRepo); candidate != "" && p.repoInList(candidate) {
+		return candidate
+	}
+	if len(p.repos) > 0 {
+		return p.repos[0].FullName
+	}
+	return ""
+}
+
+func (p *Program) repoInList(fullName string) bool {
+	for _, repo := range p.repos {
+		if repo.FullName == fullName {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *Program) saveRepoSelectionCmd(repo string) masc.Cmd {
+	payload := map[string]string{"selected_repo": repo}
+	body, _ := json.Marshal(payload)
+	return func() masc.Msg {
+		headers := map[string]interface{}{
+			"Content-Type": "application/json",
+		}
+		options := map[string]interface{}{
+			"method":  "POST",
+			"headers": headers,
+			"body":    string(body),
+		}
+		respValue, err := awaitPromise(js.Global().Call("fetch", "/session", js.ValueOf(options)))
+		if err != nil {
+			return RepoSelectionSaved{Error: err.Error()}
+		}
+		if !respValue.Get("ok").Bool() {
+			textValue, err := awaitPromise(respValue.Call("text"))
+			if err != nil {
+				return RepoSelectionSaved{Error: err.Error()}
+			}
+			return RepoSelectionSaved{Error: fmt.Sprintf("failed to save selection: %s", strings.TrimSpace(textValue.String()))}
+		}
+		return RepoSelectionSaved{}
 	}
 }
 
@@ -549,15 +680,16 @@ func (p *Program) renderHeader(send func(masc.Msg)) masc.ComponentOrHTML {
 			),
 			elem.Div(
 				masc.Markup(masc.Class("brand")),
-				elem.Div(masc.Markup(masc.Class("brand-mark")), masc.Text("K")),
-				elem.Div(
-					elem.Div(masc.Markup(masc.Class("brand-title")), masc.Text("AER Sales Kanban")),
-					elem.Div(masc.Markup(masc.Class("brand-sub")), masc.Text("GitHub-backed Markdown boards")),
-				),
+				elem.Image(masc.Markup(
+					masc.Class("brand-mark"),
+					masc.Attribute("src", "/static/spectus.png"),
+					masc.Attribute("alt", "Spectus logo"),
+				)),
 			),
 			elem.Div(
 				masc.Markup(masc.Class("header-actions")),
-				masc.If(p.repoLoaded,
+				masc.If(len(p.repos) > 0, p.renderRepoSelect(send)),
+				masc.If(p.repoLoaded && len(p.repos) == 0,
 					elem.Div(masc.Markup(masc.Class("status-pill")), masc.Text(p.repo.Repo+"@"+p.branch)),
 				),
 				masc.If(p.repoLoaded,
@@ -584,15 +716,15 @@ func (p *Program) renderHeader(send func(masc.Msg)) masc.ComponentOrHTML {
 						masc.Text("📋 TODO"),
 					),
 				),
-							masc.If(p.repoLoaded,
-								elem.Button(
-									masc.Markup(
-										masc.Class("btn", "btn-primary"),
-										masc.Property("disabled", !p.hasPendingCommitChanges() || p.commitInProgress),
-										event.Click(func(e *masc.Event) { send(CommitChanges{}) }),
-									),
-									masc.Text("💾 Commit"),
+				masc.If(p.repoLoaded,
+					elem.Button(
+						masc.Markup(
+							masc.Class("btn", "btn-primary"),
+							masc.Property("disabled", !p.hasPendingCommitChanges() || p.commitInProgress),
+							event.Click(func(e *masc.Event) { send(CommitChanges{}) }),
 						),
+						masc.Text("💾 Commit"),
+					),
 				),
 				masc.If(p.loggedIn,
 					elem.Button(
@@ -613,11 +745,74 @@ func (p *Program) renderHeader(send func(masc.Msg)) masc.ComponentOrHTML {
 	)
 }
 
+func (p *Program) renderRepoSelect(send func(masc.Msg)) masc.ComponentOrHTML {
+	if len(p.repos) == 0 {
+		return nil
+	}
+	current := strings.TrimSpace(p.selectedRepo)
+	if current == "" && p.repo.Repo != "" {
+		current = p.repo.Repo
+	}
+	options := make([]masc.ComponentOrHTML, 0, len(p.repos))
+	for _, repo := range p.repos {
+		option := elem.Option(
+			masc.Markup(
+				masc.Property("value", repo.FullName),
+				masc.MarkupIf(repo.FullName == current, masc.Property("selected", true)),
+			),
+			masc.Text(repo.FullName),
+		)
+		options = append(options, option)
+	}
+	if p.appInstallURL != "" {
+		options = append(options, elem.Option(
+			masc.Markup(masc.Property("value", "__configure__")),
+			masc.Text("Configure repos…"),
+		))
+	}
+
+	return elem.Select(
+		append([]masc.MarkupOrChild{
+			masc.Markup(
+				masc.Class("repo-select"),
+				event.Change(func(e *masc.Event) {
+					value := e.Target.Get("value").String()
+					if value == "__configure__" {
+						send(OpenInstallURL{})
+						return
+					}
+					send(SelectRepo{FullName: value})
+				}),
+			),
+		}, toMarkupChildren(options)...)...,
+	)
+}
+
 func (p *Program) renderWelcome() masc.ComponentOrHTML {
 	return elem.Div(
 		masc.Markup(masc.Class("welcome")),
 		elem.Heading2(masc.Text("Repository not configured")),
 		elem.Paragraph(masc.Text("Ask an administrator to set the default repository for this workspace.")),
+	)
+}
+
+func (p *Program) renderRepoInstallPrompt() masc.ComponentOrHTML {
+	return elem.Div(
+		masc.Markup(masc.Class("summary-card")),
+		elem.Heading2(masc.Text("GitHub App not installed")),
+		elem.Paragraph(masc.Text("Install the GitHub App to grant access to repositories.")),
+		masc.If(p.appInstallURL != "", elem.Div(
+			masc.Markup(masc.Class("actions")),
+			elem.Anchor(
+				masc.Markup(
+					masc.Class("btn", "btn-primary"),
+					masc.Attribute("href", p.appInstallURL),
+					masc.Attribute("target", "_blank"),
+					masc.Attribute("rel", "noreferrer"),
+				),
+				masc.Text("Install GitHub App"),
+			),
+		)),
 	)
 }
 
@@ -669,39 +864,39 @@ func (p *Program) renderFilterBar(send func(masc.Msg)) masc.ComponentOrHTML {
 			),
 			elem.Div(
 				masc.Markup(masc.Class("filter-row")),
-			elem.Div(
-				masc.Markup(masc.Class("filter-group")),
-				elem.Label(masc.Text("Tags:")),
-				elem.Select(
-					append([]masc.MarkupOrChild{
-						masc.Markup(event.Change(func(e *masc.Event) {
-							send(AddFilter{Type: "tag", Value: e.Target.Get("value").String()})
-						})),
-					}, toMarkupChildren(tagOptions)...)...,
+				elem.Div(
+					masc.Markup(masc.Class("filter-group")),
+					elem.Label(masc.Text("Tags:")),
+					elem.Select(
+						append([]masc.MarkupOrChild{
+							masc.Markup(event.Change(func(e *masc.Event) {
+								send(AddFilter{Type: "tag", Value: e.Target.Get("value").String()})
+							})),
+						}, toMarkupChildren(tagOptions)...)...,
+					),
 				),
-			),
-			elem.Div(
-				masc.Markup(masc.Class("filter-group")),
-				elem.Label(masc.Text("Category:")),
-				elem.Select(
-					append([]masc.MarkupOrChild{
-						masc.Markup(event.Change(func(e *masc.Event) {
-							send(AddFilter{Type: "category", Value: e.Target.Get("value").String()})
-						})),
-					}, toMarkupChildren(catOptions)...)...,
+				elem.Div(
+					masc.Markup(masc.Class("filter-group")),
+					elem.Label(masc.Text("Category:")),
+					elem.Select(
+						append([]masc.MarkupOrChild{
+							masc.Markup(event.Change(func(e *masc.Event) {
+								send(AddFilter{Type: "category", Value: e.Target.Get("value").String()})
+							})),
+						}, toMarkupChildren(catOptions)...)...,
+					),
 				),
-			),
-			elem.Div(
-				masc.Markup(masc.Class("filter-group")),
-				elem.Label(masc.Text("User:")),
-				elem.Select(
-					append([]masc.MarkupOrChild{
-						masc.Markup(event.Change(func(e *masc.Event) {
-							send(AddFilter{Type: "user", Value: e.Target.Get("value").String()})
-						})),
-					}, toMarkupChildren(userOptions)...)...,
+				elem.Div(
+					masc.Markup(masc.Class("filter-group")),
+					elem.Label(masc.Text("User:")),
+					elem.Select(
+						append([]masc.MarkupOrChild{
+							masc.Markup(event.Change(func(e *masc.Event) {
+								send(AddFilter{Type: "user", Value: e.Target.Get("value").String()})
+							})),
+						}, toMarkupChildren(userOptions)...)...,
+					),
 				),
-			),
 				elem.Button(
 					masc.Markup(masc.Class("btn", "btn-secondary"), event.Click(func(e *masc.Event) { send(ClearFilters{}) })),
 					masc.Text("✕ Clear all"),
@@ -833,12 +1028,12 @@ func (p *Program) renderTaskCard(task Task, send func(masc.Msg)) masc.ComponentO
 			),
 		),
 		elem.Div(masc.Markup(masc.Class("task-title")), masc.Text(task.Title)),
-	masc.If(task.Description != "", elem.Div(
-		masc.Markup(
-			masc.Class("task-description"),
-			masc.UnsafeHTML(markdown.ToHTML(task.Description)),
-		),
-	)),
+		masc.If(task.Description != "", elem.Div(
+			masc.Markup(
+				masc.Class("task-description"),
+				masc.UnsafeHTML(markdown.ToHTML(task.Description)),
+			),
+		)),
 		elem.Div(
 			append([]masc.MarkupOrChild{masc.Markup(masc.Class("task-meta"))},
 				toMarkupChildren(p.taskMetaItems(task))...,
@@ -1042,7 +1237,9 @@ func (p *Program) renderDetailModal(send func(masc.Msg)) masc.ComponentOrHTML {
 								masc.Style("border", "2px solid #cbd5e0"),
 								masc.Style("border-radius", "4px"),
 								masc.Style("font-size", "0.9rem"),
-								event.Input(func(e *masc.Event) { send(UpdateDetailSubtaskField{Field: "text", Value: e.Target.Get("value").String()}) }),
+								event.Input(func(e *masc.Event) {
+									send(UpdateDetailSubtaskField{Field: "text", Value: e.Target.Get("value").String()})
+								}),
 								event.KeyDown(func(e *masc.Event) {
 									if e.Get("key").String() == "Enter" {
 										send(AddTaskSubtask{TaskID: task.ID, Text: p.detailSubtaskText, DueDate: p.detailSubtaskDue})
@@ -1058,7 +1255,9 @@ func (p *Program) renderDetailModal(send func(masc.Msg)) masc.ComponentOrHTML {
 								masc.Style("font-size", "0.9rem"),
 								masc.Style("background", "white"),
 								masc.Style("min-width", "160px"),
-								event.Input(func(e *masc.Event) { send(UpdateDetailSubtaskField{Field: "due", Value: e.Target.Get("value").String()}) }),
+								event.Input(func(e *masc.Event) {
+									send(UpdateDetailSubtaskField{Field: "due", Value: e.Target.Get("value").String()})
+								}),
 							)),
 							elem.Button(
 								masc.Markup(masc.Class("btn", "btn-primary"), masc.Style("padding", "0.5rem 1rem"), event.Click(func(e *masc.Event) {
@@ -1184,7 +1383,9 @@ func renderDetailSubtasks(taskID string, subtasks []Subtask, send func(masc.Msg)
 					masc.Style("text-decoration", "line-through"),
 					masc.Style("color", "var(--text-secondary)"),
 				),
-				event.Input(func(e *masc.Event) { send(UpdateTaskSubtaskText{TaskID: taskID, Index: index, Value: e.Target.Get("value").String()}) }),
+				event.Input(func(e *masc.Event) {
+					send(UpdateTaskSubtaskText{TaskID: taskID, Index: index, Value: e.Target.Get("value").String()})
+				}),
 			)),
 			elem.Input(masc.Markup(
 				masc.Property("type", "date"),
@@ -1195,7 +1396,9 @@ func renderDetailSubtasks(taskID string, subtasks []Subtask, send func(masc.Msg)
 				masc.Style("font-size", "0.85rem"),
 				masc.Style("background", "white"),
 				masc.Style("min-width", "140px"),
-				event.Input(func(e *masc.Event) { send(UpdateTaskSubtaskDueDate{TaskID: taskID, Index: index, Value: e.Target.Get("value").String()}) }),
+				event.Input(func(e *masc.Event) {
+					send(UpdateTaskSubtaskDueDate{TaskID: taskID, Index: index, Value: e.Target.Get("value").String()})
+				}),
 			)),
 			elem.Button(
 				masc.Markup(masc.Style("background", "none"), masc.Style("border", "none"), masc.Style("cursor", "pointer"), masc.Style("color", "#e53e3e"), masc.Style("font-size", "1.1rem"), masc.Style("padding", "0.25rem"), event.Click(func(e *masc.Event) {
@@ -1207,7 +1410,6 @@ func renderDetailSubtasks(taskID string, subtasks []Subtask, send func(masc.Msg)
 	}
 	return items
 }
-
 
 func (p *Program) renderEditModal(send func(masc.Msg)) masc.ComponentOrHTML {
 	form := p.form
@@ -1330,7 +1532,9 @@ func (p *Program) renderEditModal(send func(masc.Msg)) masc.ComponentOrHTML {
 				masc.Style("border-radius", "4px"),
 				masc.Style("font-size", "0.85rem"),
 				masc.Style("background", "white"),
-				event.Input(func(e *masc.Event) { send(UpdateFormSubtaskDueDate{Index: index, Value: e.Target.Get("value").String()}) }),
+				event.Input(func(e *masc.Event) {
+					send(UpdateFormSubtaskDueDate{Index: index, Value: e.Target.Get("value").String()})
+				}),
 			)),
 			elem.Button(
 				masc.Markup(
@@ -1379,7 +1583,9 @@ func (p *Program) renderEditModal(send func(masc.Msg)) masc.ComponentOrHTML {
 				masc.Style("border", "2px solid #cbd5e0"),
 				masc.Style("border-radius", "4px"),
 				masc.Style("font-size", "0.9rem"),
-				event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "new_subtask_text", Value: e.Target.Get("value").String()}) }),
+				event.Input(func(e *masc.Event) {
+					send(UpdateFormField{Field: "new_subtask_text", Value: e.Target.Get("value").String()})
+				}),
 			)),
 			elem.Input(masc.Markup(
 				masc.Property("type", "date"),
@@ -1395,7 +1601,9 @@ func (p *Program) renderEditModal(send func(masc.Msg)) masc.ComponentOrHTML {
 				masc.Style("border-radius", "4px"),
 				masc.Style("font-size", "0.9rem"),
 				masc.Style("background", "white"),
-				event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "new_subtask_due", Value: e.Target.Get("value").String()}) }),
+				event.Input(func(e *masc.Event) {
+					send(UpdateFormField{Field: "new_subtask_due", Value: e.Target.Get("value").String()})
+				}),
 			)),
 			elem.Button(
 				masc.Markup(
@@ -1432,115 +1640,117 @@ func (p *Program) renderEditModal(send func(masc.Msg)) masc.ComponentOrHTML {
 					masc.Text("×"),
 				),
 			),
-				elem.Form(
-					masc.Markup(event.Submit(func(e *masc.Event) { send(SaveTask{}) }).PreventDefault()),
+			elem.Form(
+				masc.Markup(event.Submit(func(e *masc.Event) { send(SaveTask{}) }).PreventDefault()),
+				elem.Div(
+					masc.Markup(masc.Class("form-group")),
+					elem.Label(masc.Text("Title *")),
+					elem.Input(masc.Markup(
+						masc.Property("type", "text"),
+						masc.Property("value", form.Title),
+						event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "title", Value: e.Target.Get("value").String()}) }),
+					)),
+				),
+				elem.Div(
+					masc.Markup(
+						masc.Style("display", "grid"),
+						masc.Style("grid-template-columns", "repeat(auto-fit, minmax(180px, 1fr))"),
+						masc.Style("gap", "1rem"),
+						masc.Style("margin-bottom", "1rem"),
+					),
 					elem.Div(
 						masc.Markup(masc.Class("form-group")),
-						elem.Label(masc.Text("Title *")),
-						elem.Input(masc.Markup(
-							masc.Property("type", "text"),
-							masc.Property("value", form.Title),
-							event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "title", Value: e.Target.Get("value").String()}) }),
-						)),
-					),
-					elem.Div(
-						masc.Markup(
-							masc.Style("display", "grid"),
-							masc.Style("grid-template-columns", "repeat(auto-fit, minmax(180px, 1fr))"),
-							masc.Style("gap", "1rem"),
-							masc.Style("margin-bottom", "1rem"),
-						),
-						elem.Div(
-							masc.Markup(masc.Class("form-group")),
-							elem.Label(masc.Text("Column *")),
-							elem.Select(
-								append([]masc.MarkupOrChild{
-									masc.Markup(event.Change(func(e *masc.Event) { send(UpdateFormField{Field: "status", Value: e.Target.Get("value").String()}) })),
-								}, toMarkupChildren(statusOptions)...)...,
-							),
-						),
-						elem.Div(
-							masc.Markup(masc.Class("form-group")),
-							elem.Label(masc.Text("Category")),
-							elem.Input(masc.Markup(
-								masc.Property("type", "text"),
-								masc.Property("value", form.Category),
-								masc.MarkupIf(categoryPlaceholder != "", masc.Property("placeholder", categoryPlaceholder)),
-								masc.MarkupIf(len(categories) > 0, masc.Attribute("list", "category-options")),
-								event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "category", Value: e.Target.Get("value").String()}) }),
-							)),
-							masc.If(len(categories) > 0,
-								elem.DataList(
-									append([]masc.MarkupOrChild{masc.Markup(masc.Attribute("id", "category-options"))}, toMarkupChildren(buildDataListOptions(categories, false))...)...,
-								),
-							),
-						),
-						elem.Div(
-							masc.Markup(masc.Class("form-group")),
-							elem.Label(masc.Text("Assigned to")),
-							elem.Input(masc.Markup(
-								masc.Property("type", "text"),
-								masc.Property("value", form.Assignees),
-								masc.MarkupIf(assigneePlaceholder != "", masc.Property("placeholder", assigneePlaceholder)),
-								masc.MarkupIf(len(userIDs) > 0, masc.Attribute("list", "assignee-options")),
-								event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "assignees", Value: e.Target.Get("value").String()}) }),
-							)),
-							masc.If(len(userIDs) > 0,
-								elem.DataList(
-									append([]masc.MarkupOrChild{masc.Markup(masc.Attribute("id", "assignee-options"))}, toMarkupChildren(buildDataListOptions(userIDs, false))...)...,
-								),
-							),
-						),
-					),
-					elem.Div(
-						masc.Markup(
-							masc.Style("display", "grid"),
-							masc.Style("grid-template-columns", "repeat(auto-fit, minmax(180px, 1fr))"),
-							masc.Style("gap", "1rem"),
-							masc.Style("margin-bottom", "1rem"),
-						),
-						elem.Div(
-							masc.Markup(masc.Class("form-group")),
-							elem.Label(masc.Text("Created")),
-							elem.Input(masc.Markup(
-								masc.Property("type", "date"),
-								masc.Property("value", form.Created),
-								event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "created", Value: e.Target.Get("value").String()}) }),
-							)),
-						),
-						elem.Div(
-							masc.Markup(masc.Class("form-group")),
-							elem.Label(masc.Text("Completed")),
-							elem.Input(masc.Markup(
-								masc.Property("type", "date"),
-								masc.Property("value", form.Completed),
-								event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "completed", Value: e.Target.Get("value").String()}) }),
-							)),
+						elem.Label(masc.Text("Column *")),
+						elem.Select(
+							append([]masc.MarkupOrChild{
+								masc.Markup(event.Change(func(e *masc.Event) { send(UpdateFormField{Field: "status", Value: e.Target.Get("value").String()}) })),
+							}, toMarkupChildren(statusOptions)...)...,
 						),
 					),
 					elem.Div(
 						masc.Markup(masc.Class("form-group")),
-						elem.Label(masc.Text("Tags")),
+						elem.Label(masc.Text("Category")),
 						elem.Input(masc.Markup(
 							masc.Property("type", "text"),
-							masc.Property("value", form.Tags),
-							masc.MarkupIf(tagsPlaceholder != "", masc.Property("placeholder", tagsPlaceholder)),
-							event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "tags", Value: e.Target.Get("value").String()}) }),
-							event.Focus(func(e *masc.Event) { send(SetTagSuggestionsOpen{Open: true}) }),
-							event.FocusOut(func(e *masc.Event) { send(SetTagSuggestionsOpen{Open: false}) }),
+							masc.Property("value", form.Category),
+							masc.MarkupIf(categoryPlaceholder != "", masc.Property("placeholder", categoryPlaceholder)),
+							masc.MarkupIf(len(categories) > 0, masc.Attribute("list", "category-options")),
+							event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "category", Value: e.Target.Get("value").String()}) }),
 						)),
-						masc.If(showTagDropdown,
-							elem.Div(
-								append([]masc.MarkupOrChild{masc.Markup(masc.Class("tags-autocomplete"))}, toMarkupChildren(tagOptionNodes)...)...,
+						masc.If(len(categories) > 0,
+							elem.DataList(
+								append([]masc.MarkupOrChild{masc.Markup(masc.Attribute("id", "category-options"))}, toMarkupChildren(buildDataListOptions(categories, false))...)...,
 							),
 						),
 					),
+					elem.Div(
+						masc.Markup(masc.Class("form-group")),
+						elem.Label(masc.Text("Assigned to")),
+						elem.Input(masc.Markup(
+							masc.Property("type", "text"),
+							masc.Property("value", form.Assignees),
+							masc.MarkupIf(assigneePlaceholder != "", masc.Property("placeholder", assigneePlaceholder)),
+							masc.MarkupIf(len(userIDs) > 0, masc.Attribute("list", "assignee-options")),
+							event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "assignees", Value: e.Target.Get("value").String()}) }),
+						)),
+						masc.If(len(userIDs) > 0,
+							elem.DataList(
+								append([]masc.MarkupOrChild{masc.Markup(masc.Attribute("id", "assignee-options"))}, toMarkupChildren(buildDataListOptions(userIDs, false))...)...,
+							),
+						),
+					),
+				),
+				elem.Div(
+					masc.Markup(
+						masc.Style("display", "grid"),
+						masc.Style("grid-template-columns", "repeat(auto-fit, minmax(180px, 1fr))"),
+						masc.Style("gap", "1rem"),
+						masc.Style("margin-bottom", "1rem"),
+					),
+					elem.Div(
+						masc.Markup(masc.Class("form-group")),
+						elem.Label(masc.Text("Created")),
+						elem.Input(masc.Markup(
+							masc.Property("type", "date"),
+							masc.Property("value", form.Created),
+							event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "created", Value: e.Target.Get("value").String()}) }),
+						)),
+					),
+					elem.Div(
+						masc.Markup(masc.Class("form-group")),
+						elem.Label(masc.Text("Completed")),
+						elem.Input(masc.Markup(
+							masc.Property("type", "date"),
+							masc.Property("value", form.Completed),
+							event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "completed", Value: e.Target.Get("value").String()}) }),
+						)),
+					),
+				),
+				elem.Div(
+					masc.Markup(masc.Class("form-group")),
+					elem.Label(masc.Text("Tags")),
+					elem.Input(masc.Markup(
+						masc.Property("type", "text"),
+						masc.Property("value", form.Tags),
+						masc.MarkupIf(tagsPlaceholder != "", masc.Property("placeholder", tagsPlaceholder)),
+						event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "tags", Value: e.Target.Get("value").String()}) }),
+						event.Focus(func(e *masc.Event) { send(SetTagSuggestionsOpen{Open: true}) }),
+						event.FocusOut(func(e *masc.Event) { send(SetTagSuggestionsOpen{Open: false}) }),
+					)),
+					masc.If(showTagDropdown,
+						elem.Div(
+							append([]masc.MarkupOrChild{masc.Markup(masc.Class("tags-autocomplete"))}, toMarkupChildren(tagOptionNodes)...)...,
+						),
+					),
+				),
 				elem.Div(
 					masc.Markup(masc.Class("form-group")),
 					elem.Label(masc.Text("Description")),
 					elem.TextArea(masc.Markup(
 						masc.Property("value", form.Description),
-						event.Input(func(e *masc.Event) { send(UpdateFormField{Field: "description", Value: e.Target.Get("value").String()}) }),
+						event.Input(func(e *masc.Event) {
+							send(UpdateFormField{Field: "description", Value: e.Target.Get("value").String()})
+						}),
 					)),
 				),
 				elem.Div(
@@ -1577,52 +1787,83 @@ func (p *Program) renderArchiveModal(send func(masc.Msg)) masc.ComponentOrHTML {
 	search := strings.TrimSpace(p.archiveSearch)
 	filtered := make([]Task, 0, len(p.archived))
 	for _, task := range p.archived {
-		if search == "" || strings.Contains(strings.ToLower(task.Title), strings.ToLower(search)) || strings.Contains(strings.ToLower(task.Description), strings.ToLower(search)) {
+		if search == "" || strings.Contains(strings.ToLower(task.Title), strings.ToLower(search)) || strings.Contains(strings.ToLower(task.Description), strings.ToLower(search)) || strings.Contains(strings.ToLower(task.Category), strings.ToLower(search)) || strings.Contains(strings.ToLower(strings.Join(task.Tags, " ")), strings.ToLower(search)) {
 			filtered = append(filtered, task)
 		}
 	}
 
 	items := make([]masc.ComponentOrHTML, 0, len(filtered))
 	for _, task := range filtered {
+		pills := make([]masc.ComponentOrHTML, 0, 1+len(task.Tags))
+		if task.Category != "" {
+			pills = append(pills, elem.Span(masc.Markup(masc.Class("archive-pill", "archive-pill-category")), masc.Text(task.Category)))
+		}
+		for _, tag := range task.Tags {
+			pills = append(pills, elem.Span(masc.Markup(masc.Class("archive-pill", "archive-pill-tag")), masc.Text(tag)))
+		}
+
 		items = append(items, elem.Div(
-			masc.Markup(masc.Class("summary-card")),
+			masc.Markup(masc.Class("archive-item")),
 			elem.Div(
-				masc.Markup(masc.Style("display", "flex"), masc.Style("justify-content", "space-between"), masc.Style("align-items", "center")),
-				elem.Div(masc.Text(task.ID+" | "+task.Title)),
+				masc.Markup(masc.Class("archive-item-header")),
 				elem.Div(
-					elem.Button(masc.Markup(masc.Class("btn", "btn-danger"), event.Click(func(e *masc.Event) { send(DeleteTask{TaskID: task.ID}) })), masc.Text("🗑️")),
-					elem.Button(masc.Markup(masc.Class("btn", "btn-primary"), event.Click(func(e *masc.Event) { send(RestoreTask{TaskID: task.ID}) })), masc.Text("↩️ Restore")),
+					masc.Markup(masc.Class("archive-title")),
+					elem.Span(masc.Markup(masc.Class("archive-id")), masc.Text(task.ID)),
+					elem.Strong(masc.Text(task.Title)),
+				),
+				elem.Div(
+					masc.Markup(masc.Class("archive-actions")),
+					elem.Button(
+						masc.Markup(masc.Class("btn", "btn-secondary", "archive-delete"), event.Click(func(e *masc.Event) { send(DeleteTask{TaskID: task.ID}) })),
+						masc.Text("🗑️"),
+					),
+					elem.Button(
+						masc.Markup(masc.Class("btn", "btn-primary", "archive-restore"), event.Click(func(e *masc.Event) { send(RestoreTask{TaskID: task.ID}) })),
+						masc.Text("↩️ Restore"),
+					),
 				),
 			),
+			masc.If(task.Description != "", elem.Div(
+				masc.Markup(masc.Class("archive-description"), masc.UnsafeHTML(markdown.ToHTML(task.Description))),
+			)),
+			masc.If(len(pills) > 0, elem.Div(
+				append([]masc.MarkupOrChild{masc.Markup(masc.Class("archive-tags"))}, toMarkupChildren(pills)...)...,
+			)),
 		))
 	}
 
 	if len(items) == 0 {
-		items = append(items, elem.Div(masc.Markup(masc.Class("empty-state")), masc.Text("No archived tasks.")))
+		items = append(items, elem.Div(masc.Markup(masc.Class("archive-empty")), masc.Text("No archived tasks.")))
 	}
 
 	archiveContent := make([]masc.MarkupOrChild, 0, len(items)+3)
 	archiveContent = append(archiveContent,
-		masc.Markup(masc.Class("modal-content"), event.Click(func(e *masc.Event) {}).StopPropagation()),
+		masc.Markup(masc.Class("modal-content", "archive-modal"), event.Click(func(e *masc.Event) {}).StopPropagation()),
 		elem.Div(
 			masc.Markup(masc.Class("modal-header")),
-			elem.Heading2(masc.Text("Archives")),
+			elem.Heading2(masc.Text("📦 Archives")),
 			elem.Button(
 				masc.Markup(masc.Class("close-btn"), event.Click(func(e *masc.Event) { send(CloseModal{Mode: ModalArchive}) })),
 				masc.Text("×"),
 			),
 		),
 		elem.Div(
-			masc.Markup(masc.Class("form-group")),
-			elem.Input(masc.Markup(
-				masc.Property("type", "text"),
-				masc.Property("placeholder", "Search archives"),
-				masc.Property("value", p.archiveSearch),
-				event.Input(func(e *masc.Event) { send(UpdateArchiveSearch{Value: e.Target.Get("value").String()}) }),
-			)),
+			masc.Markup(masc.Class("archive-body")),
+			elem.Div(
+				masc.Markup(masc.Class("archive-search")),
+				elem.Input(masc.Markup(
+					masc.Class("archive-search-input"),
+					masc.Property("type", "text"),
+					masc.Property("placeholder", "Search in archives..."),
+					masc.Property("value", p.archiveSearch),
+					event.Input(func(e *masc.Event) { send(UpdateArchiveSearch{Value: e.Target.Get("value").String()}) }),
+				)),
+			),
+			elem.Div(
+				append([]masc.MarkupOrChild{masc.Markup(masc.Class("archive-list"))}, toMarkupChildren(items)...)...,
+			),
 		),
 	)
-	archiveContent = append(archiveContent, toMarkupChildren(items)...)
 
 	return elem.Div(
 		masc.Markup(
@@ -1648,12 +1889,16 @@ func (p *Program) renderColumnsModal(send func(masc.Msg)) masc.ComponentOrHTML {
 				elem.Input(masc.Markup(
 					masc.Property("type", "text"),
 					masc.Property("value", col.Name),
-					event.Input(func(e *masc.Event) { send(UpdateColumn{Index: index, Field: "name", Value: e.Target.Get("value").String()}) }),
+					event.Input(func(e *masc.Event) {
+						send(UpdateColumn{Index: index, Field: "name", Value: e.Target.Get("value").String()})
+					}),
 				)),
 				elem.Input(masc.Markup(
 					masc.Property("type", "text"),
 					masc.Property("value", col.ID),
-					event.Input(func(e *masc.Event) { send(UpdateColumn{Index: index, Field: "id", Value: e.Target.Get("value").String()}) }),
+					event.Input(func(e *masc.Event) {
+						send(UpdateColumn{Index: index, Field: "id", Value: e.Target.Get("value").String()})
+					}),
 				)),
 				elem.Button(
 					masc.Markup(
@@ -1796,13 +2041,14 @@ func (p *Program) renderTodoModal(send func(masc.Msg)) masc.ComponentOrHTML {
 				if assigneeText != "" {
 					taskHeaderChildren = append(taskHeaderChildren, elem.Span(masc.Markup(masc.Class("todo-task-assignees")), masc.Text(assigneeText)))
 				}
-				currentGroup = append(currentGroup, elem.Div(
+				currentGroup = append(currentGroup, elem.Button(
 					append([]masc.MarkupOrChild{
 						masc.Markup(
 							masc.Class("todo-task-header"),
-							event.Click(func(e *masc.Event) {
-								send(OpenModal{Mode: ModalDetail, TaskID: itemValue.TaskID})
-							}),
+							masc.Property("type", "button"),
+							event.MouseDown(func(e *masc.Event) {
+								send(OpenDetailFromTodo{TaskID: itemValue.TaskID})
+							}).PreventDefault(),
 						),
 					}, toMarkupChildren(taskHeaderChildren)...)...,
 				))

@@ -86,14 +86,13 @@ body {
 }
 
 .brand-mark {
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
-  display: grid;
-  place-items: center;
-  background: linear-gradient(135deg, #1e88e5, #0d47a1);
-  color: white;
-  font-weight: 700;
+  height: 32px;
+  width: auto;
+  max-width: 132px;
+  border-radius: 0;
+  display: block;
+  object-fit: contain;
+  background: transparent;
 }
 
 .brand-title {
@@ -111,6 +110,15 @@ body {
   flex-wrap: wrap;
   gap: 0.75rem;
   align-items: center;
+}
+
+.repo-select {
+  padding: 0.45rem 0.75rem;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: white;
+  font-size: 0.85rem;
+  min-width: 200px;
 }
 
 .btn {
@@ -619,6 +627,127 @@ body {
   overflow-y: auto;
 }
 
+.archive-modal {
+  padding: 0;
+  width: min(900px, 95vw);
+  overflow: hidden;
+}
+
+.archive-modal .modal-header {
+  padding: 1.5rem 2rem 0;
+  margin-bottom: 0;
+}
+
+.archive-body {
+  padding: 1.5rem 2rem 2rem;
+}
+
+.archive-search {
+  margin-bottom: 1rem;
+}
+
+.archive-search-input {
+  width: 100%;
+  padding: 0.75rem;
+  border: 2px solid #cbd5e0;
+  border-radius: 6px;
+  font-size: 0.95rem;
+  font-family: inherit;
+}
+
+.archive-list {
+  max-height: 500px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.archive-item {
+  background: white;
+  border: 2px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.archive-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.archive-title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.archive-id {
+  background: #6b7280;
+  color: white;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.archive-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.archive-actions .btn {
+  padding: 0.4rem 0.8rem;
+  font-size: 0.85rem;
+}
+
+.archive-delete {
+  background: #ef4444;
+  color: white;
+  border: none;
+}
+
+.archive-restore {
+  border: none;
+}
+
+.archive-description {
+  color: #666;
+  margin: 0.5rem 0;
+}
+
+.archive-tags {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.5rem;
+}
+
+.archive-pill {
+  padding: 0.25rem 0.5rem;
+  border-radius: 12px;
+  font-size: 0.8rem;
+  color: white;
+}
+
+.archive-pill-category {
+  background: #8b5cf6;
+}
+
+.archive-pill-tag {
+  background: #3b82f6;
+}
+
+.archive-empty {
+  text-align: center;
+  color: #999;
+  padding: 2rem;
+}
+
 .todo-task-group {
   margin-bottom: 1.25rem;
 }
@@ -639,6 +768,10 @@ body {
   flex-wrap: wrap;
   align-items: baseline;
   gap: 0.5rem;
+  background: transparent;
+  border: none;
+  padding: 0;
+  text-align: left;
 }
 
 .todo-task-id {

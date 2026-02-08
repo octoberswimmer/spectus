@@ -7,6 +7,7 @@ type ClientConfig struct {
 	KanbanPath    string `json:"kanban_path"`
 	ArchivePath   string `json:"archive_path"`
 	CommitMessage string `json:"commit_message"`
+	AppInstallURL string `json:"app_install_url"`
 }
 
 type Session struct {
@@ -14,6 +15,7 @@ type Session struct {
 	TokenType   string `json:"token_type"`
 	Scope       string `json:"scope"`
 	ExpiresAt   string `json:"expires_at,omitempty"`
+	SelectedRepo string `json:"selected_repo,omitempty"`
 }
 
 type User struct {
@@ -29,6 +31,12 @@ type RepoSelection struct {
 	KanbanPath  string
 	ArchivePath string
 	Branch      string
+}
+
+type RepoOption struct {
+	Owner    string
+	Name     string
+	FullName string
 }
 
 type BoardConfig struct {

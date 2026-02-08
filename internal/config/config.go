@@ -17,6 +17,7 @@ type Config struct {
 	OAuthClientID     string
 	OAuthClientSecret string
 	OAuthScopes       []string
+	AppInstallURL     string
 	HashKey           []byte
 	BlockKey          []byte
 	DefaultRepo       string
@@ -43,9 +44,10 @@ func Load() Config {
 	cfg := Config{
 		Addr:              addr,
 		BaseURL:           baseURL,
-		OAuthClientID:     strings.TrimSpace(os.Getenv("CLIENT_ID")),
-		OAuthClientSecret: strings.TrimSpace(os.Getenv("CLIENT_SECRET")),
-		OAuthScopes:       envList("GITHUB_SCOPES", []string{"repo", "read:user"}),
+		OAuthClientID:     envOr("GITHUB_APP_CLIENT_ID", strings.TrimSpace(os.Getenv("CLIENT_ID"))),
+		OAuthClientSecret: envOr("GITHUB_APP_CLIENT_SECRET", strings.TrimSpace(os.Getenv("CLIENT_SECRET"))),
+		OAuthScopes:       envList("GITHUB_SCOPES", nil),
+		AppInstallURL:     strings.TrimSpace(os.Getenv("GITHUB_APP_INSTALL_URL")),
 		DefaultRepo:       strings.TrimSpace(os.Getenv("KANBAN_REPO")),
 		KanbanPath:        envOr("KANBAN_PATH", "kanban.md"),
 		ArchivePath:       envOr("ARCHIVE_PATH", "archive.md"),

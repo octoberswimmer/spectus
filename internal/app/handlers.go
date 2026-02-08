@@ -29,6 +29,7 @@ type Session struct {
 	TokenType   string `json:"token_type"`
 	Scope       string `json:"scope"`
 	ExpiresAt   string `json:"expires_at,omitempty"`
+	SelectedRepo string `json:"selected_repo,omitempty"`
 }
 
 func (a *App) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -117,14 +118,48 @@ func (a *App) handleCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleSession(w http.ResponseWriter, r *http.Request) {
-	session, err := a.readSession(r)
-	if err != nil {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
+	switch r.Method {
+	case http.MethodGet:
+		session, err := a.readSession(r)
+		if err != nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(session)
+	case http.MethodPost:
+		session, err := a.readSession(r)
+		if err != nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var payload struct {
+			SelectedRepo string `json:"selected_repo"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		session.SelectedRepo = strings.TrimSpace(payload.SelectedRepo)
+		encoded, err := a.cookies.Encode(a.cookieName, session)
+		if err != nil {
+			http.Error(w, "failed to encode session", http.StatusInternalServerError)
+			return
+		}
+		cookie := &http.Cookie{
+			Name:     a.cookieName,
+			Value:    encoded,
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+			Secure:   config.IsSecureURL(a.baseURLForRequest(r)),
+		}
+		http.SetCookie(w, cookie)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(session)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(session)
 }
 
 func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {

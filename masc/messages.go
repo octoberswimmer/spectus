@@ -34,6 +34,21 @@ type CommitResult struct {
 	Error string
 }
 
+type ReposLoaded struct {
+	Repos []RepoOption
+	Error string
+}
+
+type SelectRepo struct {
+	FullName string
+}
+
+type OpenInstallURL struct{}
+
+type RepoSelectionSaved struct {
+	Error string
+}
+
 type UpdateSearch struct {
 	Value string
 }
@@ -173,6 +188,10 @@ type MoveColumn struct {
 
 type UpdateArchiveSearch struct {
 	Value string
+}
+
+type OpenDetailFromTodo struct {
+	TaskID string
 }
 
 type Logout struct{}

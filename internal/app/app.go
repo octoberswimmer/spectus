@@ -25,6 +25,7 @@ type ClientConfig struct {
 	KanbanPath    string `json:"kanban_path"`
 	ArchivePath   string `json:"archive_path"`
 	CommitMessage string `json:"commit_message"`
+	AppInstallURL string `json:"app_install_url"`
 }
 
 func New(cfg config.Config, tmpl *template.Template) *App {
@@ -32,7 +33,7 @@ func New(cfg config.Config, tmpl *template.Template) *App {
 	oauth := &oauth2.Config{
 		ClientID:     cfg.OAuthClientID,
 		ClientSecret: cfg.OAuthClientSecret,
-		Scopes:       cfg.OAuthScopes,
+		Scopes:       nil,
 		RedirectURL:  cfg.BaseURL + "/auth/github/callback",
 		Endpoint:     github.Endpoint,
 	}
@@ -59,6 +60,7 @@ func (a *App) clientConfigJSON() (template.JS, error) {
 		KanbanPath:    a.cfg.KanbanPath,
 		ArchivePath:   a.cfg.ArchivePath,
 		CommitMessage: a.cfg.CommitMessage,
+		AppInstallURL: a.cfg.AppInstallURL,
 	}
 	data, err := json.Marshal(cfg)
 	if err != nil {
