@@ -44,8 +44,8 @@ func Load() Config {
 	cfg := Config{
 		Addr:              addr,
 		BaseURL:           baseURL,
-		OAuthClientID:     envOr("GITHUB_APP_CLIENT_ID", strings.TrimSpace(os.Getenv("CLIENT_ID"))),
-		OAuthClientSecret: envOr("GITHUB_APP_CLIENT_SECRET", strings.TrimSpace(os.Getenv("CLIENT_SECRET"))),
+		OAuthClientID:     strings.TrimSpace(os.Getenv("GITHUB_APP_CLIENT_ID")),
+		OAuthClientSecret: strings.TrimSpace(os.Getenv("GITHUB_APP_CLIENT_SECRET")),
 		OAuthScopes:       envList("GITHUB_SCOPES", nil),
 		AppInstallURL:     strings.TrimSpace(os.Getenv("GITHUB_APP_INSTALL_URL")),
 		DefaultRepo:       strings.TrimSpace(os.Getenv("KANBAN_REPO")),

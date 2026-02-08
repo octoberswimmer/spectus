@@ -190,6 +190,30 @@ type UpdateArchiveSearch struct {
 	Value string
 }
 
+type DragStartTask struct {
+	TaskID string
+}
+
+type DragOverTask struct {
+	TaskID   string
+	ColumnID string
+}
+
+type DragOverColumn struct {
+	ColumnID string
+}
+
+type DragEndTask struct{}
+
+type DropOnTask struct {
+	TargetTaskID string
+	ColumnID     string
+}
+
+type DropOnColumn struct {
+	ColumnID string
+}
+
 type OpenDetailFromTodo struct {
 	TaskID string
 }

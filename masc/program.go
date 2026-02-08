@@ -82,6 +82,8 @@ type Program struct {
 	newSubtaskDue     string
 	detailSubtaskText string
 	detailSubtaskDue  string
+
+	dragDrop DragDropState
 }
 
 func NewProgram(cfg ClientConfig) *Program {
@@ -454,6 +456,36 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		return p, nil
 	case UpdateArchiveSearch:
 		p.archiveSearch = msg.Value
+		return p, nil
+	case DragStartTask:
+		p.dragDrop.DraggingTaskID = msg.TaskID
+		p.dragDrop.OverTaskID = ""
+		p.dragDrop.OverColumnID = ""
+		return p, nil
+	case DragOverTask:
+		if p.dragDrop.DraggingTaskID == "" || msg.TaskID == p.dragDrop.DraggingTaskID {
+			return p, nil
+		}
+		p.dragDrop.OverTaskID = msg.TaskID
+		p.dragDrop.OverColumnID = msg.ColumnID
+		return p, nil
+	case DragOverColumn:
+		if p.dragDrop.DraggingTaskID == "" {
+			return p, nil
+		}
+		p.dragDrop.OverTaskID = ""
+		p.dragDrop.OverColumnID = msg.ColumnID
+		return p, nil
+	case DragEndTask:
+		p.dragDrop.Reset()
+		return p, nil
+	case DropOnTask:
+		p.handleDropOnTask(msg.TargetTaskID, msg.ColumnID)
+		p.dragDrop.Reset()
+		return p, nil
+	case DropOnColumn:
+		p.handleDropOnColumn(msg.ColumnID)
+		p.dragDrop.Reset()
 		return p, nil
 	case Logout:
 		return p, logoutCmd()
@@ -937,10 +969,9 @@ func (p *Program) renderBoard(send func(masc.Msg)) masc.ComponentOrHTML {
 	columnNodes := make([]masc.ComponentOrHTML, 0, len(columns))
 	for _, column := range columns {
 		tasks := p.filteredTasks(column.ID)
+		listMarkups := p.dragDrop.ColumnListMarkups(column.ID, len(tasks) == 0, send)
 		children := make([]masc.MarkupOrChild, 0, len(tasks)+2)
-		children = append(children,
-			masc.Markup(masc.Class("task-list")),
-		)
+		children = append(children, listMarkups...)
 		if len(tasks) == 0 {
 			children = append(children, elem.Div(masc.Markup(masc.Class("empty-state")), masc.Text("No tasks")))
 		} else {
@@ -985,14 +1016,17 @@ func (p *Program) renderTaskCard(task Task, send func(masc.Msg)) masc.ComponentO
 		progress = fmt.Sprintf("%d/%d", completed, len(task.Subtasks))
 	}
 
-	return elem.Div(
+	cardMarkups := []masc.MarkupOrChild{
 		masc.Markup(
-			masc.Class("task-card"),
 			masc.Style("cursor", "pointer"),
 			event.Click(func(e *masc.Event) {
 				send(OpenModal{Mode: ModalDetail, TaskID: task.ID})
 			}),
 		),
+	}
+	cardMarkups = append(cardMarkups, p.dragDrop.TaskCardMarkups(task.ID, task.Status, send)...)
+
+	cardChildren := []masc.MarkupOrChild{
 		elem.Div(
 			masc.Markup(masc.Class("task-header")),
 			elem.Div(masc.Markup(masc.Class("task-id")), masc.Text(task.ID)),
@@ -1001,6 +1035,7 @@ func (p *Program) renderTaskCard(task Task, send func(masc.Msg)) masc.ComponentO
 				elem.Button(
 					masc.Markup(
 						masc.Class("btn", "btn-ghost"),
+						masc.Attribute("title", "Move to top"),
 						event.Click(func(e *masc.Event) {
 							send(MoveTaskPosition{TaskID: task.ID, Direction: -1})
 						}).StopPropagation(),
@@ -1010,6 +1045,7 @@ func (p *Program) renderTaskCard(task Task, send func(masc.Msg)) masc.ComponentO
 				elem.Button(
 					masc.Markup(
 						masc.Class("btn", "btn-ghost"),
+						masc.Attribute("title", "Move to bottom"),
 						event.Click(func(e *masc.Event) {
 							send(MoveTaskPosition{TaskID: task.ID, Direction: 1})
 						}).StopPropagation(),
@@ -1051,7 +1087,9 @@ func (p *Program) renderTaskCard(task Task, send func(masc.Msg)) masc.ComponentO
 				elem.Span(masc.Text(progress)),
 			),
 		)),
-	)
+	}
+
+	return elem.Div(append(cardMarkups, cardChildren...)...)
 }
 
 func (p *Program) taskMetaItems(task Task) []masc.ComponentOrHTML {
@@ -2406,23 +2444,119 @@ func (p *Program) moveTaskWithinColumn(taskID string, direction int) {
 	if len(columnIndices) < 2 {
 		return
 	}
-	currentPos := -1
-	for i, v := range columnIndices {
-		if v == idx {
-			currentPos = i
+	lastInColumn := columnIndices[len(columnIndices)-1]
+	targetIdx := lastInColumn
+	if direction < 0 {
+		if idx == columnIndices[0] {
+			return
+		}
+		targetIdx = columnIndices[0]
+	} else {
+		if idx == lastInColumn {
+			return
+		}
+		targetIdx = lastInColumn + 1
+	}
+	if targetIdx == idx {
+		return
+	}
+
+	task = p.tasks[idx]
+	p.tasks = append(p.tasks[:idx], p.tasks[idx+1:]...)
+	if idx < targetIdx {
+		targetIdx--
+	}
+	if targetIdx < 0 {
+		targetIdx = 0
+	}
+	if targetIdx > len(p.tasks) {
+		targetIdx = len(p.tasks)
+	}
+	p.tasks = append(p.tasks, Task{})
+	copy(p.tasks[targetIdx+1:], p.tasks[targetIdx:])
+	p.tasks[targetIdx] = task
+	p.dirty = true
+}
+
+func (p *Program) handleDropOnTask(targetTaskID, columnID string) {
+	dragged := strings.TrimSpace(p.dragDrop.DraggingTaskID)
+	if dragged == "" || dragged == targetTaskID {
+		return
+	}
+	p.moveTaskByDrop(dragged, targetTaskID, columnID)
+}
+
+func (p *Program) handleDropOnColumn(columnID string) {
+	dragged := strings.TrimSpace(p.dragDrop.DraggingTaskID)
+	if dragged == "" {
+		return
+	}
+	p.moveTaskByDrop(dragged, "", columnID)
+}
+
+func (p *Program) moveTaskByDrop(taskID, targetTaskID, targetColumnID string) {
+	idx := p.taskIndexByID(taskID)
+	if idx < 0 {
+		return
+	}
+	if targetColumnID == "" {
+		return
+	}
+	if !p.columnExists(targetColumnID) {
+		return
+	}
+
+	task := p.tasks[idx]
+	task.Status = targetColumnID
+	task.Modified = time.Now().Format("2006-01-02")
+	p.tasks = append(p.tasks[:idx], p.tasks[idx+1:]...)
+
+	insertIdx := p.dropInsertIndex(targetTaskID, targetColumnID)
+	if insertIdx < 0 {
+		insertIdx = 0
+	}
+	if insertIdx > len(p.tasks) {
+		insertIdx = len(p.tasks)
+	}
+	p.tasks = append(p.tasks, Task{})
+	copy(p.tasks[insertIdx+1:], p.tasks[insertIdx:])
+	p.tasks[insertIdx] = task
+	p.dirty = true
+}
+
+func (p *Program) dropInsertIndex(targetTaskID, targetColumnID string) int {
+	if targetTaskID != "" {
+		if idx := p.taskIndexByID(targetTaskID); idx >= 0 {
+			return idx
+		}
+	}
+	lastIndex := -1
+	for i := len(p.tasks) - 1; i >= 0; i-- {
+		if p.tasks[i].Status == targetColumnID {
+			lastIndex = i
 			break
 		}
 	}
-	if currentPos == -1 {
-		return
+	if lastIndex >= 0 {
+		return lastIndex + 1
 	}
-	newPos := currentPos + direction
-	if newPos < 0 || newPos >= len(columnIndices) {
-		return
+
+	columnIndex := p.columnOrderIndex(targetColumnID)
+	for i, task := range p.tasks {
+		if p.columnOrderIndex(task.Status) > columnIndex {
+			return i
+		}
 	}
-	swapIdx := columnIndices[newPos]
-	p.tasks[idx], p.tasks[swapIdx] = p.tasks[swapIdx], p.tasks[idx]
-	p.dirty = true
+	return len(p.tasks)
+}
+
+func (p *Program) columnOrderIndex(columnID string) int {
+	for i, col := range p.config.Columns {
+		if col.ID == columnID {
+			return i
+		}
+	}
+	return len(p.config.Columns)
 }
 
 func (p *Program) addColumn() {
