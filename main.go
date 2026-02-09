@@ -41,7 +41,7 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	log.Printf("AER Sales Kanban listening on %s", cfg.Addr)
+	log.Printf("spectus listening on %s", cfg.Addr)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}

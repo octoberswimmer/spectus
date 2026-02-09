@@ -10,7 +10,7 @@ import (
 )
 
 func main() {
-	masc.SetTitle("AER Sales Kanban")
+	masc.SetTitle("Spectus")
 	js.Global().Set("startWithDiv", jsStartFunc())
 	select {}
 }
