@@ -621,3 +621,401 @@ func TestMergeTaskLists(t *testing.T) {
 		}
 	})
 }
+
+// TestConflictResolutionScenarios tests real-world conflict scenarios
+func TestConflictResolutionScenarios(t *testing.T) {
+	// Base state: task in "To Do" column with original title
+	baseTask := Task{
+		ID:          "TASK-MLFM5M12M3",
+		Title:       "first card",
+		Status:      "todo",
+		Category:    "Backend",
+		Assignees:   []string{"@user"},
+		Tags:        []string{"bug"},
+		Created:     "2026-02-09T00:00:00Z",
+		Modified:    "2026-02-09T00:00:00Z",
+		Description: "Original description",
+	}
+
+	t.Run("local_renames_remote_moves_column", func(t *testing.T) {
+		// User scenario: local renames task, remote moves to different column
+		base := []Task{baseTask}
+
+		// Local: renamed title
+		localTask := baseTask
+		localTask.Title = "Another NEW NAME!"
+		local := []Task{localTask}
+
+		// Remote: moved to "In Progress" column
+		remoteTask := baseTask
+		remoteTask.Status = "in-progress"
+		remote := []Task{remoteTask}
+
+		tasks := MergeTaskLists(base, local, remote)
+
+		if len(tasks) != 1 {
+			t.Fatalf("expected 1 task, got %d", len(tasks))
+		}
+
+		task := tasks[0]
+		if task.Title != "Another NEW NAME!" {
+			t.Errorf("expected local title 'Another NEW NAME!', got %q", task.Title)
+		}
+		if task.Status != "in-progress" {
+			t.Errorf("expected remote status 'in-progress', got %q", task.Status)
+		}
+		// Other properties should remain unchanged
+		if task.Category != "Backend" {
+			t.Errorf("expected category 'Backend', got %q", task.Category)
+		}
+	})
+
+	t.Run("local_adds_description_remote_adds_tags", func(t *testing.T) {
+		base := []Task{baseTask}
+
+		localTask := baseTask
+		localTask.Description = "Updated description with details"
+		local := []Task{localTask}
+
+		remoteTask := baseTask
+		remoteTask.Tags = []string{"bug", "urgent", "priority"}
+		remote := []Task{remoteTask}
+
+		tasks := MergeTaskLists(base, local, remote)
+
+		if len(tasks) != 1 {
+			t.Fatalf("expected 1 task, got %d", len(tasks))
+		}
+
+		task := tasks[0]
+		if task.Description != "Updated description with details" {
+			t.Errorf("expected local description, got %q", task.Description)
+		}
+		if len(task.Tags) != 3 || task.Tags[0] != "bug" {
+			t.Errorf("expected remote tags [bug urgent priority], got %v", task.Tags)
+		}
+	})
+
+	t.Run("local_assigns_user_remote_changes_category", func(t *testing.T) {
+		base := []Task{baseTask}
+
+		localTask := baseTask
+		localTask.Assignees = []string{"@user", "@newuser"}
+		local := []Task{localTask}
+
+		remoteTask := baseTask
+		remoteTask.Category = "Frontend"
+		remote := []Task{remoteTask}
+
+		tasks := MergeTaskLists(base, local, remote)
+
+		if len(tasks) != 1 {
+			t.Fatalf("expected 1 task, got %d", len(tasks))
+		}
+
+		task := tasks[0]
+		if len(task.Assignees) != 2 {
+			t.Errorf("expected 2 assignees, got %d", len(task.Assignees))
+		}
+		if task.Category != "Frontend" {
+			t.Errorf("expected remote category 'Frontend', got %q", task.Category)
+		}
+	})
+
+	t.Run("multiple_tasks_different_changes", func(t *testing.T) {
+		task1 := Task{ID: "TASK-001", Title: "Task One", Status: "todo"}
+		task2 := Task{ID: "TASK-002", Title: "Task Two", Status: "todo"}
+		task3 := Task{ID: "TASK-003", Title: "Task Three", Status: "todo"}
+		base := []Task{task1, task2, task3}
+
+		// Local: rename task1, delete task2, add task4
+		localTask1 := task1
+		localTask1.Title = "Task One Renamed"
+		task4 := Task{ID: "TASK-004", Title: "New Local Task", Status: "todo"}
+		local := []Task{localTask1, task3, task4}
+
+		// Remote: move task1 to done, rename task3, add task5
+		remoteTask1 := task1
+		remoteTask1.Status = "done"
+		remoteTask3 := task3
+		remoteTask3.Title = "Task Three Updated"
+		task5 := Task{ID: "TASK-005", Title: "New Remote Task", Status: "in-progress"}
+		remote := []Task{remoteTask1, task2, remoteTask3, task5}
+
+		tasks := MergeTaskLists(base, local, remote)
+
+		// Expected: 4 tasks
+		// - task1: renamed locally + moved remotely
+		// - task2: deleted locally (local delete wins)
+		// - task3: renamed remotely (local unchanged)
+		// - task4: added locally
+		// - task5: added remotely
+		if len(tasks) != 4 {
+			t.Fatalf("expected 4 tasks, got %d", len(tasks))
+		}
+
+		taskMap := make(map[string]Task)
+		for _, task := range tasks {
+			taskMap[task.ID] = task
+		}
+
+		// Task1: local title + remote status
+		if taskMap["TASK-001"].Title != "Task One Renamed" {
+			t.Errorf("task1: expected 'Task One Renamed', got %q", taskMap["TASK-001"].Title)
+		}
+		if taskMap["TASK-001"].Status != "done" {
+			t.Errorf("task1: expected status 'done', got %q", taskMap["TASK-001"].Status)
+		}
+
+		// Task2: should be deleted (local delete)
+		if _, exists := taskMap["TASK-002"]; exists {
+			t.Error("task2 should have been deleted")
+		}
+
+		// Task3: remote title (local unchanged)
+		if taskMap["TASK-003"].Title != "Task Three Updated" {
+			t.Errorf("task3: expected 'Task Three Updated', got %q", taskMap["TASK-003"].Title)
+		}
+
+		// Task4: added locally
+		if _, exists := taskMap["TASK-004"]; !exists {
+			t.Error("task4 should exist (added locally)")
+		}
+
+		// Task5: added remotely
+		if _, exists := taskMap["TASK-005"]; !exists {
+			t.Error("task5 should exist (added remotely)")
+		}
+	})
+
+	t.Run("cascading_merge_simulation", func(t *testing.T) {
+		// Simulates what happens when a retry commit also fails
+		// First merge: base A, local B, remote C -> M1
+		// Second merge: base C, local M1, remote D -> M2
+
+		taskA := Task{ID: "TASK-001", Title: "Original", Status: "todo", Category: "Backend"}
+		taskB := Task{ID: "TASK-001", Title: "User Renamed", Status: "todo", Category: "Backend"}
+		taskC := Task{ID: "TASK-001", Title: "Original", Status: "in-progress", Category: "Backend"}
+
+		// First merge
+		merged1 := MergeTaskLists([]Task{taskA}, []Task{taskB}, []Task{taskC})
+		if len(merged1) != 1 {
+			t.Fatalf("first merge: expected 1 task, got %d", len(merged1))
+		}
+		m1 := merged1[0]
+		if m1.Title != "User Renamed" || m1.Status != "in-progress" {
+			t.Errorf("first merge: expected title='User Renamed' status='in-progress', got title=%q status=%q", m1.Title, m1.Status)
+		}
+
+		// Second merge: someone else changed category while we were merging
+		taskD := Task{ID: "TASK-001", Title: "Original", Status: "in-progress", Category: "Frontend"}
+
+		merged2 := MergeTaskLists([]Task{taskC}, []Task{m1}, []Task{taskD})
+		if len(merged2) != 1 {
+			t.Fatalf("second merge: expected 1 task, got %d", len(merged2))
+		}
+		m2 := merged2[0]
+
+		// Should have: title from m1 (changed from C), status same, category from D (changed from C)
+		if m2.Title != "User Renamed" {
+			t.Errorf("second merge: expected title 'User Renamed', got %q", m2.Title)
+		}
+		if m2.Status != "in-progress" {
+			t.Errorf("second merge: expected status 'in-progress', got %q", m2.Status)
+		}
+		if m2.Category != "Frontend" {
+			t.Errorf("second merge: expected category 'Frontend', got %q", m2.Category)
+		}
+	})
+
+	t.Run("local_completes_subtask_remote_adds_subtask", func(t *testing.T) {
+		taskWithSubtasks := Task{
+			ID:       "TASK-001",
+			Title:    "Task with subtasks",
+			Status:   "todo",
+			Subtasks: []Subtask{{Text: "Subtask 1", Completed: false}},
+		}
+		base := []Task{taskWithSubtasks}
+
+		// Local: complete the subtask
+		localTask := taskWithSubtasks
+		localTask.Subtasks = []Subtask{{Text: "Subtask 1", Completed: true}}
+		local := []Task{localTask}
+
+		// Remote: add a new subtask (subtasks changed, so different)
+		remoteTask := taskWithSubtasks
+		remoteTask.Subtasks = []Subtask{
+			{Text: "Subtask 1", Completed: false},
+			{Text: "Subtask 2", Completed: false},
+		}
+		remote := []Task{remoteTask}
+
+		tasks := MergeTaskLists(base, local, remote)
+
+		if len(tasks) != 1 {
+			t.Fatalf("expected 1 task, got %d", len(tasks))
+		}
+
+		// Both changed subtasks, so local wins
+		task := tasks[0]
+		if len(task.Subtasks) != 1 {
+			t.Errorf("expected 1 subtask (local wins), got %d", len(task.Subtasks))
+		}
+		if !task.Subtasks[0].Completed {
+			t.Error("expected subtask to be completed (local change)")
+		}
+	})
+
+	t.Run("notes_merge", func(t *testing.T) {
+		taskWithNotes := Task{
+			ID:     "TASK-001",
+			Title:  "Task",
+			Status: "todo",
+			Notes:  "Original notes",
+		}
+		base := []Task{taskWithNotes}
+
+		// Local: update notes
+		localTask := taskWithNotes
+		localTask.Notes = "Updated notes by local"
+		local := []Task{localTask}
+
+		// Remote: unchanged
+		remote := []Task{taskWithNotes}
+
+		tasks := MergeTaskLists(base, local, remote)
+
+		if len(tasks) != 1 {
+			t.Fatalf("expected 1 task, got %d", len(tasks))
+		}
+
+		if tasks[0].Notes != "Updated notes by local" {
+			t.Errorf("expected local notes, got %q", tasks[0].Notes)
+		}
+	})
+
+	t.Run("completed_timestamp_merge", func(t *testing.T) {
+		task := Task{
+			ID:        "TASK-001",
+			Title:     "Task",
+			Status:    "todo",
+			Completed: "",
+		}
+		base := []Task{task}
+
+		// Local: mark as complete
+		localTask := task
+		localTask.Status = "done"
+		localTask.Completed = "2026-02-09T10:00:00Z"
+		local := []Task{localTask}
+
+		// Remote: also mark as complete at different time
+		remoteTask := task
+		remoteTask.Status = "done"
+		remoteTask.Completed = "2026-02-09T09:00:00Z"
+		remote := []Task{remoteTask}
+
+		tasks := MergeTaskLists(base, local, remote)
+
+		if len(tasks) != 1 {
+			t.Fatalf("expected 1 task, got %d", len(tasks))
+		}
+
+		// Both changed Completed, so local wins
+		if tasks[0].Completed != "2026-02-09T10:00:00Z" {
+			t.Errorf("expected local completed time, got %q", tasks[0].Completed)
+		}
+	})
+}
+
+// TestMergeTaskAllProperties tests merging when all properties are independently changed
+func TestMergeTaskAllProperties(t *testing.T) {
+	base := Task{
+		ID:          "TASK-001",
+		Title:       "Base Title",
+		Status:      "todo",
+		Category:    "Backend",
+		Assignees:   []string{"@user1"},
+		Tags:        []string{"tag1"},
+		Created:     "2026-01-01T00:00:00Z",
+		Modified:    "2026-01-01T00:00:00Z",
+		Completed:   "",
+		Description: "Base description",
+		Subtasks:    []Subtask{{Text: "Base subtask", Completed: false}},
+		Notes:       "Base notes",
+	}
+
+	// Local changes some properties
+	local := Task{
+		ID:          "TASK-001",
+		Title:       "Local Title",           // changed
+		Status:      "todo",                  // unchanged
+		Category:    "Backend",               // unchanged
+		Assignees:   []string{"@user1"},      // unchanged
+		Tags:        []string{"tag1", "new"}, // changed
+		Created:     "2026-01-01T00:00:00Z",
+		Modified:    "2026-01-02T00:00:00Z",
+		Completed:   "",
+		Description: "Base description",                                  // unchanged
+		Subtasks:    []Subtask{{Text: "Base subtask", Completed: false}}, // unchanged
+		Notes:       "Local notes",                                       // changed
+	}
+
+	// Remote changes other properties
+	remote := Task{
+		ID:          "TASK-001",
+		Title:       "Base Title",                 // unchanged
+		Status:      "in-progress",                // changed
+		Category:    "Frontend",                   // changed
+		Assignees:   []string{"@user1", "@user2"}, // changed
+		Tags:        []string{"tag1"},             // unchanged
+		Created:     "2026-01-01T00:00:00Z",
+		Modified:    "2026-01-03T00:00:00Z",
+		Completed:   "",
+		Description: "Remote description",                                // changed
+		Subtasks:    []Subtask{{Text: "Base subtask", Completed: false}}, // unchanged
+		Notes:       "Base notes",                                        // unchanged
+	}
+
+	result := MergeTask(base, local, remote)
+
+	// Title: local changed, remote unchanged -> local
+	if result.Title != "Local Title" {
+		t.Errorf("Title: expected 'Local Title', got %q", result.Title)
+	}
+
+	// Status: local unchanged, remote changed -> remote
+	if result.Status != "in-progress" {
+		t.Errorf("Status: expected 'in-progress', got %q", result.Status)
+	}
+
+	// Category: local unchanged, remote changed -> remote
+	if result.Category != "Frontend" {
+		t.Errorf("Category: expected 'Frontend', got %q", result.Category)
+	}
+
+	// Assignees: local unchanged, remote changed -> remote
+	if len(result.Assignees) != 2 {
+		t.Errorf("Assignees: expected 2, got %d", len(result.Assignees))
+	}
+
+	// Tags: local changed, remote unchanged -> local
+	if len(result.Tags) != 2 || result.Tags[1] != "new" {
+		t.Errorf("Tags: expected [tag1 new], got %v", result.Tags)
+	}
+
+	// Description: local unchanged, remote changed -> remote
+	if result.Description != "Remote description" {
+		t.Errorf("Description: expected 'Remote description', got %q", result.Description)
+	}
+
+	// Notes: local changed, remote unchanged -> local
+	if result.Notes != "Local notes" {
+		t.Errorf("Notes: expected 'Local notes', got %q", result.Notes)
+	}
+
+	// Modified: use most recent
+	if result.Modified != "2026-01-03T00:00:00Z" {
+		t.Errorf("Modified: expected remote time (most recent), got %q", result.Modified)
+	}
+}

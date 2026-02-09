@@ -66,10 +66,10 @@ type Program struct {
 	tagSuggestionsOpen   bool
 
 	// Retry state for stale HEAD conflicts
-	retryCommitMessage  string
-	retryCommitFiles    map[string]string
-	retryBaseKanban     string
-	retryBaseArchive    string
+	retryCommitMessage string
+	retryCommitFiles   map[string]string
+	retryBaseKanban    string
+	retryBaseArchive   string
 
 	loading          bool
 	commitInProgress bool
@@ -236,17 +236,47 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 			p.commitInProgress = false
 			p.retryCommitMessage = ""
 			p.retryCommitFiles = nil
+			p.retryBaseKanban = ""
+			p.retryBaseArchive = ""
 			p.error = "Failed to refresh: " + msg.Error
 			return p, nil
 		}
 		p.headOID = msg.HeadOID
 		if p.retryCommitFiles != nil {
-			// Retry the commit with new HEAD
-			statusCmd := p.setStatus("Retrying commit…", false)
-			files := p.retryCommitFiles
+			// Perform 3-way merge: base (last saved) + local (pending) + remote (fresh)
+			localKanban := p.retryCommitFiles[p.repo.KanbanPath]
+			localArchive := p.retryCommitFiles[p.repo.ArchivePath]
+
+			// Merge kanban
+			mergedConfig, mergedTasks := mergeKanban(p.retryBaseKanban, localKanban, msg.KanbanContent)
+			p.config = mergedConfig
+			p.tasks = mergedTasks
+
+			// Merge archive
+			mergedArchive := mergeArchive(p.retryBaseArchive, localArchive, msg.ArchiveContent)
+			p.archived = mergedArchive
+
+			// Generate markdown from merged state
+			mergedKanbanContent := p.generateKanbanMarkdown()
+			mergedArchiveContent := p.generateArchiveMarkdown()
+
+			// Update tracking state
+			p.lastSavedKanban = msg.KanbanContent
+			p.lastSavedArchive = msg.ArchiveContent
+
+			// Retry the commit with merged content
+			statusCmd := p.setStatus("Retrying commit with merged changes…", false)
+			files := map[string]string{
+				p.repo.KanbanPath:  mergedKanbanContent,
+				p.repo.ArchivePath: mergedArchiveContent,
+			}
 			message := p.retryCommitMessage
 			p.retryCommitMessage = ""
 			p.retryCommitFiles = nil
+			p.retryBaseKanban = ""
+			p.retryBaseArchive = ""
+			p.pendingCommitKanban = mergedKanbanContent
+			p.pendingCommitArchive = mergedArchiveContent
 			return p, batchCmds(statusCmd, p.commitCmd(message, files))
 		}
 		return p, nil
