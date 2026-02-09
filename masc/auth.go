@@ -34,3 +34,10 @@ func isUnauthorizedMessage(message string) bool {
 	msg := strings.ToLower(message)
 	return strings.Contains(msg, "status 401") || strings.Contains(msg, "bad credentials")
 }
+
+func isStaleHead(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "Expected branch to point to")
+}

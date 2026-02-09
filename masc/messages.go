@@ -34,6 +34,14 @@ type CommitResult struct {
 	OID          string
 	Error        string
 	Unauthorized bool
+	StaleHead    bool
+}
+
+type HeadRefreshed struct {
+	HeadOID        string
+	KanbanContent  string
+	ArchiveContent string
+	Error          string
 }
 
 type ReposLoaded struct {

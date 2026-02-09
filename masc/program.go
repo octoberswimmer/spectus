@@ -65,6 +65,12 @@ type Program struct {
 	pendingCommitArchive string
 	tagSuggestionsOpen   bool
 
+	// Retry state for stale HEAD conflicts
+	retryCommitMessage  string
+	retryCommitFiles    map[string]string
+	retryBaseKanban     string
+	retryBaseArchive    string
+
 	loading          bool
 	commitInProgress bool
 	error            string
@@ -194,6 +200,18 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		if msg.Unauthorized {
 			return p.handleUnauthorized()
 		}
+		if msg.StaleHead {
+			// Remote changed since we loaded. Refresh HEAD and merge.
+			p.retryCommitMessage = p.commitMessageDraft
+			p.retryCommitFiles = map[string]string{
+				p.repo.KanbanPath:  p.pendingCommitKanban,
+				p.repo.ArchivePath: p.pendingCommitArchive,
+			}
+			p.retryBaseKanban = p.lastSavedKanban
+			p.retryBaseArchive = p.lastSavedArchive
+			statusCmd := p.setStatus("Remote changes detected. Merging and retrying…", false)
+			return p, batchCmds(statusCmd, p.refreshHeadCmd())
+		}
 		p.commitInProgress = false
 		if msg.Error != "" {
 			p.error = msg.Error
@@ -213,6 +231,25 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		} else {
 			return p, p.setStatus("Commit saved.", true)
 		}
+	case HeadRefreshed:
+		if msg.Error != "" {
+			p.commitInProgress = false
+			p.retryCommitMessage = ""
+			p.retryCommitFiles = nil
+			p.error = "Failed to refresh: " + msg.Error
+			return p, nil
+		}
+		p.headOID = msg.HeadOID
+		if p.retryCommitFiles != nil {
+			// Retry the commit with new HEAD
+			statusCmd := p.setStatus("Retrying commit…", false)
+			files := p.retryCommitFiles
+			message := p.retryCommitMessage
+			p.retryCommitMessage = ""
+			p.retryCommitFiles = nil
+			return p, batchCmds(statusCmd, p.commitCmd(message, files))
+		}
+		return p, nil
 	case ClearStatus:
 		if msg.Seq == p.statusSeq {
 			p.status = ""
@@ -733,9 +770,29 @@ func (p *Program) commitCmd(message string, files map[string]string) masc.Cmd {
 		client := &GraphQLClient{Token: token}
 		result, err := commitRepoFiles(client, repoName, branch, headOID, commitMessage, files)
 		if err != nil {
-			return CommitResult{Error: err.Error(), Unauthorized: isUnauthorized(err)}
+			return CommitResult{Error: err.Error(), Unauthorized: isUnauthorized(err), StaleHead: isStaleHead(err)}
 		}
 		return CommitResult{URL: result.URL, OID: result.OID}
+	}
+}
+
+func (p *Program) refreshHeadCmd() masc.Cmd {
+	owner := p.repo.Owner
+	name := p.repo.Name
+	kanbanPath := p.repo.KanbanPath
+	archivePath := p.repo.ArchivePath
+	token := p.token
+	return func() masc.Msg {
+		client := &GraphQLClient{Token: token}
+		files, err := fetchRepoFiles(client, owner, name, kanbanPath, archivePath)
+		if err != nil {
+			return HeadRefreshed{Error: err.Error()}
+		}
+		return HeadRefreshed{
+			HeadOID:        files.HeadOID,
+			KanbanContent:  files.KanbanContent,
+			ArchiveContent: files.ArchiveContent,
+		}
 	}
 }
 

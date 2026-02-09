@@ -91,6 +91,34 @@ func fetchRepoFiles(client *GraphQLClient, owner, name, kanbanPath, archivePath 
 	}, nil
 }
 
+func fetchHeadOID(client *GraphQLClient, owner, name string) (string, error) {
+	if owner == "" || name == "" {
+		return "", errors.New("repository is required")
+	}
+	query := `query($owner: String!, $name: String!) {
+		repository(owner: $owner, name: $name) {
+			defaultBranchRef { target { oid } }
+		}
+	}`
+	vars := map[string]interface{}{
+		"owner": owner,
+		"name":  name,
+	}
+	var resp struct {
+		Repository struct {
+			DefaultBranchRef struct {
+				Target struct {
+					OID string `json:"oid"`
+				} `json:"target"`
+			} `json:"defaultBranchRef"`
+		} `json:"repository"`
+	}
+	if err := client.Query(query, vars, &resp); err != nil {
+		return "", err
+	}
+	return resp.Repository.DefaultBranchRef.Target.OID, nil
+}
+
 type commitResult struct {
 	URL string
 	OID string
