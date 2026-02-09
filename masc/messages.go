@@ -176,6 +176,10 @@ type MoveTaskPosition struct {
 	Direction int
 }
 
+type CloneTask struct {
+	TaskID string
+}
+
 type AddColumn struct{}
 
 type UpdateColumn struct {

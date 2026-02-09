@@ -456,6 +456,8 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 	case MoveTaskPosition:
 		p.moveTaskWithinColumn(msg.TaskID, msg.Direction)
 		return p, nil
+	case CloneTask:
+		return p.cloneTask(msg.TaskID)
 	case AddColumn:
 		p.addColumn()
 		return p, nil
@@ -1089,6 +1091,16 @@ func (p *Program) renderTaskCard(task Task, send func(masc.Msg)) masc.ComponentO
 						}).StopPropagation(),
 					),
 					masc.Text("⬇️"),
+				),
+				elem.Button(
+					masc.Markup(
+						masc.Class("btn", "btn-ghost"),
+						masc.Attribute("title", "Clone task"),
+						event.Click(func(e *masc.Event) {
+							send(CloneTask{TaskID: task.ID})
+						}).StopPropagation(),
+					),
+					masc.Text("📋"),
 				),
 				elem.Button(
 					masc.Markup(
@@ -2542,6 +2554,53 @@ func (p *Program) restoreTask(taskID string) {
 	}
 	p.tasks = append(p.tasks, task)
 	p.dirty = true
+}
+
+func (p *Program) cloneTask(taskID string) (*Program, masc.Cmd) {
+	idx := p.taskIndexByID(taskID)
+	if idx < 0 {
+		return p, nil
+	}
+	original := p.tasks[idx]
+	today := time.Now().Format("2006-01-02")
+	cloned := Task{
+		ID:          generateTaskID(),
+		Title:       original.Title,
+		Status:      original.Status,
+		Category:    original.Category,
+		Assignees:   append([]string{}, original.Assignees...),
+		Tags:        append([]string{}, original.Tags...),
+		Created:     today,
+		Modified:    today,
+		Completed:   "",
+		Description: original.Description,
+		Subtasks:    cloneSubtasks(original.Subtasks),
+		Notes:       original.Notes,
+	}
+	newTasks := make([]Task, 0, len(p.tasks)+1)
+	newTasks = append(newTasks, p.tasks[:idx+1]...)
+	newTasks = append(newTasks, cloned)
+	newTasks = append(newTasks, p.tasks[idx+1:]...)
+	p.tasks = newTasks
+	p.dirty = true
+	p.modal = ModalEdit
+	p.form = p.formForTask(cloned.ID)
+	p.newSubtaskText = ""
+	p.newSubtaskDue = ""
+	p.tagSuggestionsOpen = false
+	return p, p.setStatus("Task cloned.", true)
+}
+
+func cloneSubtasks(subtasks []Subtask) []Subtask {
+	cloned := make([]Subtask, len(subtasks))
+	for i, s := range subtasks {
+		cloned[i] = Subtask{
+			Completed: false,
+			Text:      s.Text,
+			DueDate:   s.DueDate,
+		}
+	}
+	return cloned
 }
 
 func (p *Program) moveTaskWithinColumn(taskID string, direction int) {
