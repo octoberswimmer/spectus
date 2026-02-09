@@ -2,6 +2,8 @@
 
 A GitHub-backed Kanban board that reads and writes `kanban.md` + `archive.md` directly in a repository using the GitHub GraphQL API. The UI is a Masc (Go WASM) app, and the server handles GitHub OAuth.
 
+Spectus is a port of [MarkdownTaskManager](https://github.com/ioniks/MarkdownTaskManager), an HTML/JavaScript application, to a [masc](https://github.com/octoberswimmer/masc) application.
+
 ## Features
 - Load a repo + markdown paths from the UI.
 - Edit tasks, subtasks, tags, and columns.
