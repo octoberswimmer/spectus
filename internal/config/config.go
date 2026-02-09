@@ -25,6 +25,7 @@ type Config struct {
 	ArchivePath       string
 	CommitMessage     string
 	SessionCookieName string
+	WebhookSecret     string
 }
 
 func Load() Config {
@@ -53,6 +54,7 @@ func Load() Config {
 		ArchivePath:       envOr("ARCHIVE_PATH", "archive.md"),
 		CommitMessage:     envOr("COMMIT_MESSAGE", "Update kanban"),
 		SessionCookieName: envOr("SESSION_COOKIE", "kanban_session"),
+		WebhookSecret:     strings.TrimSpace(os.Getenv("GITHUB_WEBHOOK_SECRET")),
 	}
 
 	cfg.HashKey = []byte(strings.TrimSpace(os.Getenv("HASH_KEY")))

@@ -18,6 +18,7 @@ type App struct {
 	oauth      *oauth2.Config
 	cookies    *securecookie.SecureCookie
 	cookieName string
+	sseHub     *SSEHub
 }
 
 type ClientConfig struct {
@@ -43,6 +44,7 @@ func New(cfg config.Config, tmpl *template.Template) *App {
 		oauth:      oauth,
 		cookies:    cookies,
 		cookieName: cfg.SessionCookieName,
+		sseHub:     NewSSEHub(),
 	}
 }
 
@@ -52,6 +54,8 @@ func (a *App) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/auth/github/callback", a.handleCallback)
 	mux.HandleFunc("/session", a.handleSession)
 	mux.HandleFunc("/logout", a.handleLogout)
+	mux.HandleFunc("/webhook", a.handleWebhook)
+	mux.HandleFunc("/events", a.handleSSE)
 }
 
 func (a *App) clientConfigJSON() (template.JS, error) {

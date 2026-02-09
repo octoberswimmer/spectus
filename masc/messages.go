@@ -231,6 +231,15 @@ type OpenDetailFromTodo struct {
 
 type Logout struct{}
 
+type SSEReload struct {
+	Repo string
+}
+
+type SSEError struct {
+	Repo       string
+	RetryDelay int // milliseconds
+}
+
 type ModalMode string
 
 const (

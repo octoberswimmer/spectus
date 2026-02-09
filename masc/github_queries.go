@@ -74,6 +74,9 @@ func fetchRepoFiles(client *GraphQLClient, owner, name, kanbanPath, archivePath 
 		return repoFiles{}, err
 	}
 	branch := resp.Repository.DefaultBranchRef.Name
+	if branch == "" {
+		branch = "main"
+	}
 	headOID := resp.Repository.DefaultBranchRef.Target.OID
 	kanbanMissing := resp.Repository.Kanban.OID == ""
 	archiveMissing := resp.Repository.Archive.OID == ""
@@ -97,12 +100,57 @@ func commitRepoFiles(client *GraphQLClient, repoName, branch, headOID, message s
 	if repoName == "" || branch == "" {
 		return commitResult{}, errors.New("repo and branch are required")
 	}
-	if headOID == "" {
-		return commitResult{}, errors.New("missing head oid")
-	}
 	if len(files) == 0 {
 		return commitResult{}, errors.New("no files to commit")
 	}
+
+	// For empty repos (no headOID), use REST API to create initial commit
+	if headOID == "" {
+		return commitRepoFilesREST(client, repoName, branch, message, files)
+	}
+
+	return commitRepoFilesGraphQL(client, repoName, branch, headOID, message, files)
+}
+
+func commitRepoFilesREST(client *GraphQLClient, repoName, branch, message string, files map[string]string) (commitResult, error) {
+	baseURL := fmt.Sprintf("https://api.github.com/repos/%s", repoName)
+
+	// For empty repos, we must use Contents API to create the first file,
+	// then use GraphQL to add all files in a second commit
+	var firstPath string
+	for path := range files {
+		firstPath = path
+		break
+	}
+	firstPath = strings.TrimPrefix(firstPath, "/")
+	firstContent := files["/"+firstPath]
+	if firstContent == "" {
+		firstContent = files[firstPath]
+	}
+
+	// Create first file to initialize the repo
+	encoded := base64.StdEncoding.EncodeToString([]byte(firstContent))
+	resp, err := client.REST("PUT", baseURL+"/contents/"+firstPath, map[string]interface{}{
+		"message": "Initialize repository",
+		"content": encoded,
+		"branch":  branch,
+	})
+	if err != nil {
+		return commitResult{}, fmt.Errorf("init repo: %w", err)
+	}
+
+	// Get the new HEAD OID
+	commit, _ := resp["commit"].(map[string]interface{})
+	headOID, _ := commit["sha"].(string)
+	if headOID == "" {
+		return commitResult{}, errors.New("failed to get commit SHA after init")
+	}
+
+	// Now use GraphQL to commit all files
+	return commitRepoFilesGraphQL(client, repoName, branch, headOID, message, files)
+}
+
+func commitRepoFilesGraphQL(client *GraphQLClient, repoName, branch, headOID, message string, files map[string]string) (commitResult, error) {
 	additions := make([]map[string]interface{}, 0, len(files))
 	for path, content := range files {
 		encoded := base64.StdEncoding.EncodeToString([]byte(content))

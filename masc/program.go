@@ -67,7 +67,6 @@ type Program struct {
 
 	loading          bool
 	commitInProgress bool
-	dirty            bool
 	error            string
 	status           string
 	statusSeq        int
@@ -181,8 +180,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		p.archived = parseArchive(archiveContent)
 		p.lastSavedArchive = msg.ArchiveContent
 
-		p.dirty = msg.MissingKanban || msg.MissingArchive
-		return p, statusCmd
+		return p, batchCmds(statusCmd, p.sseListenCmd())
 	case CommitChanges:
 		if !p.repoLoaded || p.commitInProgress || !p.hasPendingCommitChanges() {
 			return p, nil
@@ -201,7 +199,6 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 			p.error = msg.Error
 			return p, nil
 		}
-		p.dirty = false
 		if p.pendingCommitKanban != "" || p.pendingCommitArchive != "" {
 			p.lastSavedKanban = p.pendingCommitKanban
 			p.lastSavedArchive = p.pendingCommitArchive
@@ -335,9 +332,9 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		if strings.TrimSpace(p.appInstallURL) == "" {
 			return p, nil
 		}
-		url := p.appInstallURL
+		url := p.buildInstallURL()
 		return p, func() masc.Msg {
-			js.Global().Call("open", url, "_blank")
+			js.Global().Get("location").Set("href", url)
 			return nil
 		}
 	case SetTagSuggestionsOpen:
@@ -505,12 +502,28 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		return p, nil
 	case Logout:
 		return p, logoutCmd()
+	case SSEReload:
+		if strings.ToLower(p.selectedRepo) != strings.ToLower(msg.Repo) {
+			return p, p.sseListenCmd()
+		}
+		if p.hasPendingCommitChanges() {
+			statusCmd := p.setStatus("Remote changes detected. Commit or discard your changes to sync.", false)
+			return p, batchCmds(statusCmd, p.sseListenCmd())
+		}
+		p.loading = true
+		statusCmd := p.setStatus("Syncing remote changes…", false)
+		return p, batchCmds(statusCmd, p.loadRepoCmd())
+	case SSEError:
+		// Retry with exponential backoff
+		return p, p.sseListenWithBackoff(msg.RetryDelay)
 	}
 
 	return p, nil
 }
 
 func (p *Program) Render(send func(masc.Msg)) masc.ComponentOrHTML {
+	js.Global().Set("hasDirtyChanges", p.repoLoaded && p.hasPendingCommitChanges())
+
 	if !p.loggedIn {
 		return p.renderLogin(send)
 	}
@@ -643,6 +656,19 @@ func (p *Program) repoToLoad() string {
 		return p.selectedRepo
 	}
 	return strings.TrimSpace(p.cfg.DefaultRepo)
+}
+
+func (p *Program) buildInstallURL() string {
+	base := strings.TrimSpace(p.appInstallURL)
+	if base == "" {
+		return ""
+	}
+	currentURL := js.Global().Get("location").Get("href").String()
+	encoded := js.Global().Call("encodeURIComponent", currentURL).String()
+	if strings.Contains(base, "?") {
+		return base + "&state=" + encoded
+	}
+	return base + "?state=" + encoded
 }
 
 func (p *Program) resolveSelectedRepo() string {
@@ -878,9 +904,7 @@ func (p *Program) renderRepoInstallPrompt() masc.ComponentOrHTML {
 			elem.Anchor(
 				masc.Markup(
 					masc.Class("btn", "btn-primary"),
-					masc.Attribute("href", p.appInstallURL),
-					masc.Attribute("target", "_blank"),
-					masc.Attribute("rel", "noreferrer"),
+					masc.Attribute("href", p.buildInstallURL()),
 				),
 				masc.Text("Install GitHub App"),
 			),
@@ -2501,7 +2525,6 @@ func (p *Program) handleSaveTask() (masc.Model, masc.Cmd) {
 		task.Notes = strings.TrimSpace(form.Notes)
 		p.tasks[idx] = task
 		statusCmd := p.setStatus("Task updated.", true)
-		p.dirty = true
 		p.modal = ModalNone
 		p.form = TaskForm{}
 		return p, statusCmd
@@ -2522,7 +2545,6 @@ func (p *Program) handleSaveTask() (masc.Model, masc.Cmd) {
 		}
 		p.tasks = append(p.tasks, newTask)
 		statusCmd := p.setStatus("Task created.", true)
-		p.dirty = true
 		p.modal = ModalNone
 		p.form = TaskForm{}
 		return p, statusCmd
@@ -2535,7 +2557,6 @@ func (p *Program) deleteTaskByID(taskID string) {
 		return
 	}
 	p.tasks = append(p.tasks[:idx], p.tasks[idx+1:]...)
-	p.dirty = true
 	p.modal = ModalNone
 }
 
@@ -2547,7 +2568,6 @@ func (p *Program) archiveTask(taskID string) {
 	task := p.tasks[idx]
 	p.tasks = append(p.tasks[:idx], p.tasks[idx+1:]...)
 	p.archived = append(p.archived, task)
-	p.dirty = true
 	p.modal = ModalNone
 }
 
@@ -2562,7 +2582,6 @@ func (p *Program) restoreTask(taskID string) {
 		task.Status = p.firstColumnID()
 	}
 	p.tasks = append(p.tasks, task)
-	p.dirty = true
 }
 
 func (p *Program) cloneTask(taskID string) (*Program, masc.Cmd) {
@@ -2591,7 +2610,6 @@ func (p *Program) cloneTask(taskID string) (*Program, masc.Cmd) {
 	newTasks = append(newTasks, cloned)
 	newTasks = append(newTasks, p.tasks[idx+1:]...)
 	p.tasks = newTasks
-	p.dirty = true
 	p.modal = ModalEdit
 	p.form = p.formForTask(cloned.ID)
 	p.newSubtaskText = ""
@@ -2658,7 +2676,6 @@ func (p *Program) moveTaskWithinColumn(taskID string, direction int) {
 	p.tasks = append(p.tasks, Task{})
 	copy(p.tasks[targetIdx+1:], p.tasks[targetIdx:])
 	p.tasks[targetIdx] = task
-	p.dirty = true
 }
 
 func (p *Program) handleDropOnTask(targetTaskID, columnID string) {
@@ -2704,7 +2721,6 @@ func (p *Program) moveTaskByDrop(taskID, targetTaskID, targetColumnID string) {
 	p.tasks = append(p.tasks, Task{})
 	copy(p.tasks[insertIdx+1:], p.tasks[insertIdx:])
 	p.tasks[insertIdx] = task
-	p.dirty = true
 }
 
 func (p *Program) dropInsertIndex(targetTaskID, targetColumnID string) int {
@@ -2744,7 +2760,6 @@ func (p *Program) columnOrderIndex(columnID string) int {
 
 func (p *Program) addColumn() {
 	p.config.Columns = append(p.config.Columns, Column{Name: "New Column", ID: fmt.Sprintf("column-%d", len(p.config.Columns)+1)})
-	p.dirty = true
 }
 
 func (p *Program) updateColumn(index int, field, value string) {
@@ -2757,7 +2772,6 @@ func (p *Program) updateColumn(index int, field, value string) {
 	case "id":
 		p.config.Columns[index].ID = value
 	}
-	p.dirty = true
 }
 
 func (p *Program) deleteColumn(index int) {
@@ -2765,7 +2779,6 @@ func (p *Program) deleteColumn(index int) {
 		return
 	}
 	p.config.Columns = append(p.config.Columns[:index], p.config.Columns[index+1:]...)
-	p.dirty = true
 }
 
 func (p *Program) moveColumn(index int, direction int) {
@@ -2774,7 +2787,6 @@ func (p *Program) moveColumn(index int, direction int) {
 		return
 	}
 	p.config.Columns[index], p.config.Columns[newIdx] = p.config.Columns[newIdx], p.config.Columns[index]
-	p.dirty = true
 }
 
 func (p *Program) formForTask(taskID string) TaskForm {
@@ -2831,7 +2843,6 @@ func (p *Program) updateTaskSubtasks(taskID string, update func(*Task)) {
 	update(&task)
 	task.Modified = time.Now().Format("2006-01-02")
 	p.tasks[idx] = task
-	p.dirty = true
 }
 
 func (p *Program) archivedIndexByID(taskID string) int {

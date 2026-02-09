@@ -25,10 +25,10 @@ type statePayload struct {
 }
 
 type Session struct {
-	AccessToken string `json:"access_token"`
-	TokenType   string `json:"token_type"`
-	Scope       string `json:"scope"`
-	ExpiresAt   string `json:"expires_at,omitempty"`
+	AccessToken  string `json:"access_token"`
+	TokenType    string `json:"token_type"`
+	Scope        string `json:"scope"`
+	ExpiresAt    string `json:"expires_at,omitempty"`
 	SelectedRepo string `json:"selected_repo,omitempty"`
 }
 
@@ -65,15 +65,23 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleCallback(w http.ResponseWriter, r *http.Request) {
 	state := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
-	if state == "" || code == "" {
-		http.Error(w, "missing state or code", http.StatusBadRequest)
+	if code == "" {
+		http.Error(w, "missing code", http.StatusBadRequest)
 		return
 	}
 
-	payload, err := a.decodeState(state)
-	if err != nil {
-		http.Error(w, "invalid state", http.StatusUnauthorized)
-		return
+	// Determine return URL from state
+	// State can be either:
+	// 1. An encoded state payload (from normal OAuth flow via /login)
+	// 2. A raw URL (from GitHub App installation flow)
+	returnTo := "/"
+	if state != "" {
+		if payload, err := a.decodeState(state); err == nil {
+			returnTo = payload.ReturnTo
+		} else if strings.HasPrefix(state, "http://") || strings.HasPrefix(state, "https://") {
+			// State is a raw URL from the install flow
+			returnTo = state
+		}
 	}
 
 	conf := a.oauthConfigForRequest(r)
@@ -109,7 +117,6 @@ func (a *App) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	http.SetCookie(w, cookie)
 
-	returnTo := payload.ReturnTo
 	if returnTo == "" {
 		returnTo = "/"
 	}

@@ -11,8 +11,21 @@ import (
 
 func main() {
 	masc.SetTitle("Spectus")
+	setupBeforeUnload()
 	js.Global().Set("startWithDiv", jsStartFunc())
 	select {}
+}
+
+func setupBeforeUnload() {
+	js.Global().Set("hasDirtyChanges", false)
+	js.Global().Get("window").Call("addEventListener", "beforeunload", js.FuncOf(func(this js.Value, args []js.Value) any {
+		if js.Global().Get("hasDirtyChanges").Bool() {
+			event := args[0]
+			event.Call("preventDefault")
+			return "You have uncommitted changes. Are you sure you want to leave?"
+		}
+		return nil
+	}))
 }
 
 func jsStartFunc() js.Func {

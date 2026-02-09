@@ -59,6 +59,7 @@ Optional:
 - `KANBAN_PATH`: Default kanban path. Default `kanban.md`.
 - `ARCHIVE_PATH`: Default archive path. Default `archive.md`.
 - `COMMIT_MESSAGE`: Default commit message. Default `Update kanban`.
+- `GITHUB_WEBHOOK_SECRET`: Secret for verifying GitHub webhook signatures (for real-time sync).
 
 ## GitHub OAuth Setup
 Create a GitHub OAuth App and set:
@@ -66,6 +67,15 @@ Create a GitHub OAuth App and set:
 - Authorization callback URL: `PUBLIC_URL/auth/github/callback`
 
 Make sure the app has the scopes listed in `GITHUB_SCOPES` (the default includes `repo`).
+
+## GitHub Webhook Setup (Optional)
+To enable real-time sync when other users commit changes:
+1. In your GitHub App settings, enable webhooks
+2. Set the webhook URL to `PUBLIC_URL/webhook`
+3. Set a webhook secret and configure `GITHUB_WEBHOOK_SECRET` to match
+4. Subscribe to "Push" events
+
+When another user commits changes to `kanban.md` or `archive.md`, all connected clients will automatically sync.
 
 ## File Structure
 - `kanban.md` - Active tasks organized by column
