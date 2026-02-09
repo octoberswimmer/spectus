@@ -17,28 +17,28 @@ import (
 
 type SSEHub struct {
 	mu      sync.RWMutex
-	clients map[string]map[chan string]struct{} // repo -> set of channels
+	clients map[string]map[chan SSEEvent]struct{} // repo -> set of channels
 }
 
 func NewSSEHub() *SSEHub {
 	return &SSEHub{
-		clients: make(map[string]map[chan string]struct{}),
+		clients: make(map[string]map[chan SSEEvent]struct{}),
 	}
 }
 
-func (h *SSEHub) Subscribe(repo string) chan string {
+func (h *SSEHub) Subscribe(repo string) chan SSEEvent {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	ch := make(chan string, 10)
+	ch := make(chan SSEEvent, 10)
 	if h.clients[repo] == nil {
-		h.clients[repo] = make(map[chan string]struct{})
+		h.clients[repo] = make(map[chan SSEEvent]struct{})
 	}
 	h.clients[repo][ch] = struct{}{}
 	return ch
 }
 
-func (h *SSEHub) Unsubscribe(repo string, ch chan string) {
+func (h *SSEHub) Unsubscribe(repo string, ch chan SSEEvent) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -51,11 +51,17 @@ func (h *SSEHub) Unsubscribe(repo string, ch chan string) {
 	close(ch)
 }
 
-func (h *SSEHub) Notify(repo string, event string) {
+type SSEEvent struct {
+	Type    string
+	HeadOID string
+}
+
+func (h *SSEHub) Notify(repo string, headOID string) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
 	if clients, ok := h.clients[repo]; ok {
+		event := SSEEvent{Type: "reload", HeadOID: headOID}
 		for ch := range clients {
 			select {
 			case ch <- event:
@@ -68,6 +74,7 @@ func (h *SSEHub) Notify(repo string, event string) {
 
 type PushEvent struct {
 	Ref        string `json:"ref"`
+	After      string `json:"after"` // New HEAD SHA after the push
 	Repository struct {
 		FullName string `json:"full_name"`
 	} `json:"repository"`
@@ -135,8 +142,8 @@ func (a *App) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if changed {
-		log.Printf("Webhook: %s changed, notifying clients", repo)
-		a.sseHub.Notify(repo, "reload")
+		log.Printf("Webhook: %s changed (commit %s), notifying clients", repo, event.After)
+		a.sseHub.Notify(repo, event.After)
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -188,7 +195,7 @@ func (a *App) handleSSE(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			fmt.Fprintf(w, "event: %s\ndata: {\"repo\":%q}\n\n", event, repo)
+			fmt.Fprintf(w, "event: %s\ndata: {\"repo\":%q,\"head_oid\":%q}\n\n", event.Type, repo, event.HeadOID)
 			flusher.Flush()
 		case <-heartbeat.C:
 			// SSE comment format keeps connection alive without triggering client events

@@ -3,12 +3,18 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"syscall/js"
 	"time"
 
 	"github.com/octoberswimmer/masc"
 )
+
+type sseReloadData struct {
+	Repo    string `json:"repo"`
+	HeadOID string `json:"head_oid"`
+}
 
 var (
 	activeSSE     js.Value
@@ -39,8 +45,16 @@ func (p *Program) sseListenWithBackoff(retryDelay int) masc.Cmd {
 				// Connection still active, just wait for next event
 				msgChan := make(chan masc.Msg, 1)
 				onReload := js.FuncOf(func(this js.Value, args []js.Value) any {
+					headOID := ""
+					if len(args) > 0 {
+						dataStr := args[0].Get("data").String()
+						var data sseReloadData
+						if json.Unmarshal([]byte(dataStr), &data) == nil {
+							headOID = data.HeadOID
+						}
+					}
 					select {
-					case msgChan <- SSEReload{Repo: repo}:
+					case msgChan <- SSEReload{Repo: repo, HeadOID: headOID}:
 					default:
 					}
 					return nil
@@ -63,8 +77,16 @@ func (p *Program) sseListenWithBackoff(retryDelay int) masc.Cmd {
 		msgChan := make(chan masc.Msg, 1)
 
 		onReload := js.FuncOf(func(this js.Value, args []js.Value) any {
+			headOID := ""
+			if len(args) > 0 {
+				dataStr := args[0].Get("data").String()
+				var data sseReloadData
+				if json.Unmarshal([]byte(dataStr), &data) == nil {
+					headOID = data.HeadOID
+				}
+			}
 			select {
-			case msgChan <- SSEReload{Repo: repo}:
+			case msgChan <- SSEReload{Repo: repo, HeadOID: headOID}:
 			default:
 			}
 			return nil

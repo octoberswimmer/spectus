@@ -240,7 +240,8 @@ type OpenDetailFromTodo struct {
 type Logout struct{}
 
 type SSEReload struct {
-	Repo string
+	Repo    string
+	HeadOID string
 }
 
 type SSEError struct {

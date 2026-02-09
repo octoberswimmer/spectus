@@ -91,12 +91,15 @@ func TestSSEHub_notify_sends_to_all_subscribers(t *testing.T) {
 	ch1 := hub.Subscribe("owner/repo")
 	ch2 := hub.Subscribe("owner/repo")
 
-	hub.Notify("owner/repo", "reload")
+	hub.Notify("owner/repo", "abc123")
 
 	select {
 	case msg := <-ch1:
-		if msg != "reload" {
-			t.Errorf("expected 'reload', got %q", msg)
+		if msg.Type != "reload" {
+			t.Errorf("expected type 'reload', got %q", msg.Type)
+		}
+		if msg.HeadOID != "abc123" {
+			t.Errorf("expected HeadOID 'abc123', got %q", msg.HeadOID)
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Error("ch1 did not receive message")
@@ -104,8 +107,11 @@ func TestSSEHub_notify_sends_to_all_subscribers(t *testing.T) {
 
 	select {
 	case msg := <-ch2:
-		if msg != "reload" {
-			t.Errorf("expected 'reload', got %q", msg)
+		if msg.Type != "reload" {
+			t.Errorf("expected type 'reload', got %q", msg.Type)
+		}
+		if msg.HeadOID != "abc123" {
+			t.Errorf("expected HeadOID 'abc123', got %q", msg.HeadOID)
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Error("ch2 did not receive message")
@@ -280,6 +286,7 @@ func TestHandleWebhook_notifies_on_kanban_change(t *testing.T) {
 	ch := app.sseHub.Subscribe("owner/repo")
 
 	event := PushEvent{
+		After: "def456",
 		Repository: struct {
 			FullName string `json:"full_name"`
 		}{FullName: "owner/repo"},
@@ -301,8 +308,11 @@ func TestHandleWebhook_notifies_on_kanban_change(t *testing.T) {
 
 	select {
 	case msg := <-ch:
-		if msg != "reload" {
-			t.Errorf("expected 'reload', got %q", msg)
+		if msg.Type != "reload" {
+			t.Errorf("expected type 'reload', got %q", msg.Type)
+		}
+		if msg.HeadOID != "def456" {
+			t.Errorf("expected HeadOID 'def456', got %q", msg.HeadOID)
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Error("expected notification on kanban change")
@@ -315,6 +325,7 @@ func TestHandleWebhook_notifies_on_archive_change(t *testing.T) {
 	ch := app.sseHub.Subscribe("owner/repo")
 
 	event := PushEvent{
+		After: "ghi789",
 		Repository: struct {
 			FullName string `json:"full_name"`
 		}{FullName: "owner/repo"},
@@ -336,8 +347,11 @@ func TestHandleWebhook_notifies_on_archive_change(t *testing.T) {
 
 	select {
 	case msg := <-ch:
-		if msg != "reload" {
-			t.Errorf("expected 'reload', got %q", msg)
+		if msg.Type != "reload" {
+			t.Errorf("expected type 'reload', got %q", msg.Type)
+		}
+		if msg.HeadOID != "ghi789" {
+			t.Errorf("expected HeadOID 'ghi789', got %q", msg.HeadOID)
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Error("expected notification on archive change")
@@ -384,6 +398,7 @@ func TestHandleWebhook_case_insensitive_repo_matching(t *testing.T) {
 	ch := app.sseHub.Subscribe("owner/repo") // lowercase
 
 	event := PushEvent{
+		After: "jkl012",
 		Repository: struct {
 			FullName string `json:"full_name"`
 		}{FullName: "Owner/Repo"}, // mixed case
@@ -405,8 +420,8 @@ func TestHandleWebhook_case_insensitive_repo_matching(t *testing.T) {
 
 	select {
 	case msg := <-ch:
-		if msg != "reload" {
-			t.Errorf("expected 'reload', got %q", msg)
+		if msg.Type != "reload" {
+			t.Errorf("expected type 'reload', got %q", msg.Type)
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Error("expected notification with case-insensitive repo matching")

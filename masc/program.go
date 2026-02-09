@@ -573,6 +573,10 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		if strings.ToLower(p.selectedRepo) != strings.ToLower(msg.Repo) {
 			return p, p.sseListenCmd()
 		}
+		// Skip reload if this is our own commit
+		if msg.HeadOID != "" && msg.HeadOID == p.headOID {
+			return p, p.sseListenCmd()
+		}
 		if p.hasPendingCommitChanges() {
 			statusCmd := p.setStatus("Remote changes detected. Commit or discard your changes to sync.", false)
 			return p, batchCmds(statusCmd, p.sseListenCmd())
