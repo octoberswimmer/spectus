@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 )
 
 type SSEHub struct {
@@ -177,6 +178,10 @@ func (a *App) handleSSE(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "event: connected\ndata: {\"repo\":%q}\n\n", repo)
 	flusher.Flush()
 
+	// Heartbeat ticker to keep connection alive
+	heartbeat := time.NewTicker(30 * time.Second)
+	defer heartbeat.Stop()
+
 	for {
 		select {
 		case event, ok := <-ch:
@@ -184,6 +189,10 @@ func (a *App) handleSSE(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			fmt.Fprintf(w, "event: %s\ndata: {\"repo\":%q}\n\n", event, repo)
+			flusher.Flush()
+		case <-heartbeat.C:
+			// SSE comment format keeps connection alive without triggering client events
+			fmt.Fprint(w, ": heartbeat\n\n")
 			flusher.Flush()
 		case <-r.Context().Done():
 			return
