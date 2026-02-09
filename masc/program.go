@@ -941,9 +941,12 @@ func (p *Program) renderFilterBar(send func(masc.Msg)) masc.ComponentOrHTML {
 					elem.Label(masc.Text("Tags:")),
 					elem.Select(
 						append([]masc.MarkupOrChild{
-							masc.Markup(event.Change(func(e *masc.Event) {
-								send(AddFilter{Type: "tag", Value: e.Target.Get("value").String()})
-							})),
+							masc.Markup(
+								masc.Property("value", ""),
+								event.Change(func(e *masc.Event) {
+									send(AddFilter{Type: "tag", Value: e.Target.Get("value").String()})
+								}),
+							),
 						}, toMarkupChildren(tagOptions)...)...,
 					),
 				),
@@ -952,9 +955,12 @@ func (p *Program) renderFilterBar(send func(masc.Msg)) masc.ComponentOrHTML {
 					elem.Label(masc.Text("Category:")),
 					elem.Select(
 						append([]masc.MarkupOrChild{
-							masc.Markup(event.Change(func(e *masc.Event) {
-								send(AddFilter{Type: "category", Value: e.Target.Get("value").String()})
-							})),
+							masc.Markup(
+								masc.Property("value", ""),
+								event.Change(func(e *masc.Event) {
+									send(AddFilter{Type: "category", Value: e.Target.Get("value").String()})
+								}),
+							),
 						}, toMarkupChildren(catOptions)...)...,
 					),
 				),
@@ -963,9 +969,12 @@ func (p *Program) renderFilterBar(send func(masc.Msg)) masc.ComponentOrHTML {
 					elem.Label(masc.Text("User:")),
 					elem.Select(
 						append([]masc.MarkupOrChild{
-							masc.Markup(event.Change(func(e *masc.Event) {
-								send(AddFilter{Type: "user", Value: e.Target.Get("value").String()})
-							})),
+							masc.Markup(
+								masc.Property("value", ""),
+								event.Change(func(e *masc.Event) {
+									send(AddFilter{Type: "user", Value: e.Target.Get("value").String()})
+								}),
+							),
 						}, toMarkupChildren(userOptions)...)...,
 					),
 				),
