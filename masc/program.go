@@ -935,6 +935,17 @@ func (p *Program) renderHeader(send func(masc.Msg)) masc.ComponentOrHTML {
 						masc.Text("💾 Commit"),
 					),
 				),
+				masc.If(p.repoLoaded,
+					elem.Anchor(
+						masc.Markup(
+							masc.Class("btn", "btn-secondary"),
+							masc.Attribute("href", "https://github.com/"+p.repo.Repo+"/commits/"+p.branch),
+							masc.Attribute("target", "_blank"),
+							masc.Attribute("rel", "noopener"),
+						),
+						masc.Text("📜 History"),
+					),
+				),
 				masc.If(p.loggedIn,
 					elem.Button(
 						masc.Markup(masc.Class("btn", "btn-ghost"), event.Click(func(e *masc.Event) {
