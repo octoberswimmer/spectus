@@ -618,6 +618,7 @@ func (p *Program) Render(send func(masc.Msg)) masc.ComponentOrHTML {
 		p.renderLoadingOverlay(),
 		p.renderNotification(),
 		p.renderModal(send),
+		masc.If(p.repoLoaded, p.renderDuePanel(send)),
 	)
 }
 
@@ -2417,6 +2418,63 @@ func (p *Program) buildTodoItems() []todoItem {
 	})
 
 	return items
+}
+
+func (p *Program) buildDueItems() []todoItem {
+	today := time.Now().Format("2006-01-02")
+	items := make([]todoItem, 0)
+	for _, item := range p.buildTodoItems() {
+		if item.SubtaskDueDate != "" && item.SubtaskDueDate <= today {
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
+func (p *Program) renderDuePanel(send func(masc.Msg)) masc.ComponentOrHTML {
+	items := p.buildDueItems()
+	if len(items) == 0 {
+		return masc.Text("")
+	}
+
+	today := time.Now().Format("2006-01-02")
+	listItems := make([]masc.ComponentOrHTML, 0, len(items))
+	for _, item := range items {
+		dueClass := "due-panel-due"
+		if item.SubtaskDueDate < today {
+			dueClass = "due-panel-overdue"
+		}
+		taskID := item.TaskID
+		subtaskIndex := item.SubtaskIndex
+		listItems = append(listItems, elem.Div(
+			masc.Markup(masc.Class("due-panel-item")),
+			elem.Input(masc.Markup(
+				masc.Property("type", "checkbox"),
+				masc.Style("cursor", "pointer"),
+				event.Change(func(e *masc.Event) { send(ToggleTaskSubtask{TaskID: taskID, Index: subtaskIndex}) }),
+			)),
+			elem.Button(
+				masc.Markup(
+					masc.Class("due-panel-text"),
+					masc.Property("type", "button"),
+					event.Click(func(e *masc.Event) { send(OpenDetailFromTodo{TaskID: taskID}) }),
+				),
+				masc.Text(item.SubtaskText),
+			),
+			elem.Span(masc.Markup(masc.Class(dueClass)), masc.Text(item.SubtaskDueDate)),
+		))
+	}
+
+	return elem.Div(
+		masc.Markup(masc.Class("due-panel")),
+		elem.Div(
+			masc.Markup(masc.Class("due-panel-header")),
+			masc.Text("⏰ Due"),
+		),
+		elem.Div(
+			append([]masc.MarkupOrChild{masc.Markup(masc.Class("due-panel-list"))}, toMarkupChildren(listItems)...)...,
+		),
+	)
 }
 
 func placeholderFromList(values []string, limit int, sep string) string {
