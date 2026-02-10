@@ -16,6 +16,7 @@ import (
 	"github.com/octoberswimmer/masc/elem"
 	"github.com/octoberswimmer/masc/event"
 	"github.com/octoberswimmer/spectus/internal/markdown"
+	"github.com/octoberswimmer/spectus/internal/pending"
 )
 
 var idRand = rand.New(rand.NewSource(time.Now().UnixNano()))
@@ -163,12 +164,28 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		p.loading = false
 		p.commitInProgress = false
 		p.error = ""
-		statusCmd := p.setStatus("Repository loaded.", true)
+
 		p.repo = msg.Repo
 		p.selectedRepo = msg.Repo.Repo
 		p.branch = msg.Branch
 		p.headOID = msg.HeadOID
 		p.repoLoaded = true
+
+		saved := loadPendingChanges()
+		if pending.ShouldRestore(saved, msg.Repo.Repo) {
+			clearPendingChanges()
+			config, tasks := parseKanban(saved.KanbanMarkdown)
+			p.config = config
+			p.tasks = tasks
+			p.archived = parseArchive(saved.ArchiveMarkdown)
+			p.lastSavedKanban = msg.KanbanContent
+			p.lastSavedArchive = msg.ArchiveContent
+			statusCmd := p.setStatus("Session restored. You have uncommitted changes.", true)
+			return p, batchCmds(statusCmd, p.sseListenCmd())
+		}
+		clearPendingChanges()
+
+		statusCmd := p.setStatus("Repository loaded.", true)
 
 		kanbanContent := msg.KanbanContent
 		if msg.MissingKanban || strings.TrimSpace(kanbanContent) == "" {
@@ -223,6 +240,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 			p.pendingCommitKanban = ""
 			p.pendingCommitArchive = ""
 		}
+		clearPendingChanges()
 		if msg.OID != "" {
 			p.headOID = msg.OID
 		}
@@ -645,18 +663,19 @@ func (p *Program) handleSession(msg SetSession) (masc.Model, masc.Cmd) {
 }
 
 func (p *Program) handleUnauthorized() (masc.Model, masc.Cmd) {
+	p.savePendingChanges()
 	p.loggedIn = false
 	p.token = ""
-	p.repoLoaded = false
 	p.loading = false
 	p.commitInProgress = false
 	p.repos = nil
 	p.repoInstallRequired = false
-	p.selectedRepo = ""
 	p.viewer = User{}
 	p.modal = ModalNone
 	p.error = "GitHub session expired. Please log in again."
 	p.setStatus("", false)
+	p.repoLoaded = false
+	p.selectedRepo = ""
 	return p, clearSessionCmd()
 }
 
@@ -2363,6 +2382,41 @@ func commitMessageMissingBlankLine(message string) bool {
 
 func (p *Program) hasPendingCommitChanges() bool {
 	return p.lastSavedKanban != p.generateKanbanMarkdown() || p.lastSavedArchive != p.generateArchiveMarkdown()
+}
+
+type localStorageAdapter struct{}
+
+func (l localStorageAdapter) GetItem(key string) (string, bool) {
+	val := js.Global().Get("localStorage").Call("getItem", key)
+	if val.IsNull() || val.IsUndefined() {
+		return "", false
+	}
+	return val.String(), true
+}
+
+func (l localStorageAdapter) SetItem(key, value string) {
+	js.Global().Get("localStorage").Call("setItem", key, value)
+}
+
+func (l localStorageAdapter) RemoveItem(key string) {
+	js.Global().Get("localStorage").Call("removeItem", key)
+}
+
+var localStorage pending.Storage = localStorageAdapter{}
+
+func (p *Program) savePendingChanges() {
+	if !p.hasPendingCommitChanges() {
+		return
+	}
+	pending.Save(localStorage, p.selectedRepo, p.generateKanbanMarkdown(), p.generateArchiveMarkdown())
+}
+
+func loadPendingChanges() *pending.Changes {
+	return pending.Load(localStorage)
+}
+
+func clearPendingChanges() {
+	pending.Clear(localStorage)
 }
 
 func (p *Program) buildTodoItems() []todoItem {
