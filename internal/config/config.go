@@ -23,7 +23,6 @@ type Config struct {
 	DefaultRepo       string
 	KanbanPath        string
 	ArchivePath       string
-	CommitMessage     string
 	SessionCookieName string
 	WebhookSecret     string
 }
@@ -52,7 +51,6 @@ func Load() Config {
 		DefaultRepo:       strings.TrimSpace(os.Getenv("KANBAN_REPO")),
 		KanbanPath:        envOr("KANBAN_PATH", "kanban.md"),
 		ArchivePath:       envOr("ARCHIVE_PATH", "archive.md"),
-		CommitMessage:     envOr("COMMIT_MESSAGE", "Update kanban"),
 		SessionCookieName: envOr("SESSION_COOKIE", "kanban_session"),
 		WebhookSecret:     strings.TrimSpace(os.Getenv("GITHUB_WEBHOOK_SECRET")),
 	}

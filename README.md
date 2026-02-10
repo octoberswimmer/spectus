@@ -58,7 +58,6 @@ Optional:
 - `KANBAN_REPO`: Default repo in `owner/name` form (shown in the UI).
 - `KANBAN_PATH`: Default kanban path. Default `kanban.md`.
 - `ARCHIVE_PATH`: Default archive path. Default `archive.md`.
-- `COMMIT_MESSAGE`: Default commit message. Default `Update kanban`.
 - `GITHUB_WEBHOOK_SECRET`: Secret for verifying GitHub webhook signatures (for real-time sync).
 
 ## GitHub OAuth Setup

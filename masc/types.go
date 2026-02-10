@@ -6,7 +6,6 @@ type ClientConfig struct {
 	DefaultRepo   string `json:"default_repo"`
 	KanbanPath    string `json:"kanban_path"`
 	ArchivePath   string `json:"archive_path"`
-	CommitMessage string `json:"commit_message"`
 	AppInstallURL string `json:"app_install_url"`
 }
 

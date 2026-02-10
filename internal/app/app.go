@@ -25,7 +25,6 @@ type ClientConfig struct {
 	DefaultRepo   string `json:"default_repo"`
 	KanbanPath    string `json:"kanban_path"`
 	ArchivePath   string `json:"archive_path"`
-	CommitMessage string `json:"commit_message"`
 	AppInstallURL string `json:"app_install_url"`
 }
 
@@ -63,7 +62,6 @@ func (a *App) clientConfigJSON() (template.JS, error) {
 		DefaultRepo:   a.cfg.DefaultRepo,
 		KanbanPath:    a.cfg.KanbanPath,
 		ArchivePath:   a.cfg.ArchivePath,
-		CommitMessage: a.cfg.CommitMessage,
 		AppInstallURL: a.cfg.AppInstallURL,
 	}
 	data, err := json.Marshal(cfg)
