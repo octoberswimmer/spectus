@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-const StorageKey = "spectus_pending_changes"
+const StorageKeyPrefix = "spectus_pending_"
 
 type Changes struct {
 	Repo            string `json:"repo"`
@@ -19,6 +19,10 @@ type Storage interface {
 	RemoveItem(key string)
 }
 
+func storageKey(repo string) string {
+	return StorageKeyPrefix + strings.ToLower(repo)
+}
+
 func Save(storage Storage, repo, kanbanMarkdown, archiveMarkdown string) error {
 	data := Changes{
 		Repo:            repo,
@@ -29,12 +33,12 @@ func Save(storage Storage, repo, kanbanMarkdown, archiveMarkdown string) error {
 	if err != nil {
 		return err
 	}
-	storage.SetItem(StorageKey, string(jsonData))
+	storage.SetItem(storageKey(repo), string(jsonData))
 	return nil
 }
 
-func Load(storage Storage) *Changes {
-	val, ok := storage.GetItem(StorageKey)
+func Load(storage Storage, repo string) *Changes {
+	val, ok := storage.GetItem(storageKey(repo))
 	if !ok || val == "" {
 		return nil
 	}
@@ -45,13 +49,10 @@ func Load(storage Storage) *Changes {
 	return &data
 }
 
-func Clear(storage Storage) {
-	storage.RemoveItem(StorageKey)
+func Clear(storage Storage, repo string) {
+	storage.RemoveItem(storageKey(repo))
 }
 
-func ShouldRestore(saved *Changes, loadedRepo string) bool {
-	if saved == nil {
-		return false
-	}
-	return strings.EqualFold(saved.Repo, loadedRepo)
+func HasPending(saved *Changes) bool {
+	return saved != nil
 }

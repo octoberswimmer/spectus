@@ -33,7 +33,7 @@ func TestSaveAndLoad(t *testing.T) {
 		t.Fatalf("Save failed: %v", err)
 	}
 
-	loaded := Load(storage)
+	loaded := Load(storage, "owner/repo")
 	if loaded == nil {
 		t.Fatal("Load returned nil")
 	}
@@ -52,7 +52,7 @@ func TestSaveAndLoad(t *testing.T) {
 func TestLoadEmpty(t *testing.T) {
 	storage := newMockStorage()
 
-	loaded := Load(storage)
+	loaded := Load(storage, "owner/repo")
 	if loaded != nil {
 		t.Errorf("Load on empty storage returned %v, want nil", loaded)
 	}
@@ -60,9 +60,9 @@ func TestLoadEmpty(t *testing.T) {
 
 func TestLoadInvalidJSON(t *testing.T) {
 	storage := newMockStorage()
-	storage.SetItem(StorageKey, "not valid json")
+	storage.SetItem(storageKey("owner/repo"), "not valid json")
 
-	loaded := Load(storage)
+	loaded := Load(storage, "owner/repo")
 	if loaded != nil {
 		t.Errorf("Load with invalid JSON returned %v, want nil", loaded)
 	}
@@ -72,52 +72,37 @@ func TestClear(t *testing.T) {
 	storage := newMockStorage()
 
 	Save(storage, "owner/repo", "# Kanban\n", "# Archive\n")
-	Clear(storage)
+	Clear(storage, "owner/repo")
 
-	loaded := Load(storage)
+	loaded := Load(storage, "owner/repo")
 	if loaded != nil {
 		t.Errorf("Load after Clear returned %v, want nil", loaded)
 	}
 }
 
-func TestShouldRestore(t *testing.T) {
+func TestHasPending(t *testing.T) {
 	tests := []struct {
-		name       string
-		saved      *Changes
-		loadedRepo string
-		want       bool
+		name  string
+		saved *Changes
+		want  bool
 	}{
 		{
-			name:       "nil saved",
-			saved:      nil,
-			loadedRepo: "owner/repo",
-			want:       false,
+			name:  "nil_saved",
+			saved: nil,
+			want:  false,
 		},
 		{
-			name:       "matching repo",
-			saved:      &Changes{Repo: "owner/repo"},
-			loadedRepo: "owner/repo",
-			want:       true,
-		},
-		{
-			name:       "matching repo case insensitive",
-			saved:      &Changes{Repo: "Owner/Repo"},
-			loadedRepo: "owner/repo",
-			want:       true,
-		},
-		{
-			name:       "different repo",
-			saved:      &Changes{Repo: "owner/other"},
-			loadedRepo: "owner/repo",
-			want:       false,
+			name:  "non_nil_saved",
+			saved: &Changes{Repo: "owner/repo"},
+			want:  true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := ShouldRestore(tt.saved, tt.loadedRepo)
+			got := HasPending(tt.saved)
 			if got != tt.want {
-				t.Errorf("ShouldRestore() = %v, want %v", got, tt.want)
+				t.Errorf("HasPending() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -160,7 +145,7 @@ Some description here.
 		t.Fatalf("Save failed: %v", err)
 	}
 
-	loaded := Load(storage)
+	loaded := Load(storage, "myorg/myrepo")
 	if loaded == nil {
 		t.Fatal("Load returned nil")
 	}
@@ -170,5 +155,81 @@ Some description here.
 	}
 	if loaded.ArchiveMarkdown != archive {
 		t.Errorf("ArchiveMarkdown not preserved correctly:\ngot:\n%s\nwant:\n%s", loaded.ArchiveMarkdown, archive)
+	}
+}
+
+func TestPerRepoStorage(t *testing.T) {
+	storage := newMockStorage()
+
+	Save(storage, "owner/repo-a", "# Kanban A\n", "# Archive A\n")
+	Save(storage, "owner/repo-b", "# Kanban B\n", "# Archive B\n")
+
+	loadedA := Load(storage, "owner/repo-a")
+	if loadedA == nil {
+		t.Fatal("Load for repo-a returned nil")
+	}
+	if loadedA.KanbanMarkdown != "# Kanban A\n" {
+		t.Errorf("KanbanMarkdown for repo-a = %q, want %q", loadedA.KanbanMarkdown, "# Kanban A\n")
+	}
+
+	loadedB := Load(storage, "owner/repo-b")
+	if loadedB == nil {
+		t.Fatal("Load for repo-b returned nil")
+	}
+	if loadedB.KanbanMarkdown != "# Kanban B\n" {
+		t.Errorf("KanbanMarkdown for repo-b = %q, want %q", loadedB.KanbanMarkdown, "# Kanban B\n")
+	}
+
+	Clear(storage, "owner/repo-a")
+
+	if Load(storage, "owner/repo-a") != nil {
+		t.Error("repo-a should be cleared")
+	}
+	if Load(storage, "owner/repo-b") == nil {
+		t.Error("repo-b should still exist")
+	}
+}
+
+func TestCaseInsensitiveRepoKey(t *testing.T) {
+	storage := newMockStorage()
+
+	Save(storage, "Owner/Repo", "# Kanban\n", "# Archive\n")
+
+	loaded := Load(storage, "owner/repo")
+	if loaded == nil {
+		t.Fatal("Load with different case returned nil")
+	}
+	if loaded.KanbanMarkdown != "# Kanban\n" {
+		t.Errorf("KanbanMarkdown = %q, want %q", loaded.KanbanMarkdown, "# Kanban\n")
+	}
+
+	Clear(storage, "OWNER/REPO")
+
+	if Load(storage, "owner/repo") != nil {
+		t.Error("Clear with different case should have cleared the data")
+	}
+}
+
+func TestPendingChangesPreservedAcrossRepoSwitch(t *testing.T) {
+	storage := newMockStorage()
+
+	Save(storage, "owner/repo-a", "# Kanban A\n", "# Archive A\n")
+
+	savedA := Load(storage, "owner/repo-a")
+	if savedA == nil {
+		t.Fatal("Load for repo-a returned nil after saving")
+	}
+
+	savedB := Load(storage, "owner/repo-b")
+	if savedB != nil {
+		t.Error("Load for repo-b should return nil (no pending changes)")
+	}
+
+	savedAStillExists := Load(storage, "owner/repo-a")
+	if savedAStillExists == nil {
+		t.Fatal("Pending changes for repo-a should still exist after checking repo-b")
+	}
+	if savedAStillExists.KanbanMarkdown != "# Kanban A\n" {
+		t.Errorf("KanbanMarkdown = %q, want %q", savedAStillExists.KanbanMarkdown, "# Kanban A\n")
 	}
 }

@@ -171,9 +171,9 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		p.headOID = msg.HeadOID
 		p.repoLoaded = true
 
-		saved := loadPendingChanges()
-		if pending.ShouldRestore(saved, msg.Repo.Repo) {
-			clearPendingChanges()
+		saved := loadPendingChanges(msg.Repo.Repo)
+		if saved != nil {
+			clearPendingChanges(msg.Repo.Repo)
 			config, tasks := parseKanban(saved.KanbanMarkdown)
 			p.config = config
 			p.tasks = tasks
@@ -183,7 +183,6 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 			statusCmd := p.setStatus("Session restored. You have uncommitted changes.", true)
 			return p, batchCmds(statusCmd, p.sseListenCmd())
 		}
-		clearPendingChanges()
 
 		statusCmd := p.setStatus("Repository loaded.", true)
 
@@ -240,7 +239,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 			p.pendingCommitKanban = ""
 			p.pendingCommitArchive = ""
 		}
-		clearPendingChanges()
+		clearPendingChanges(p.repo.Repo)
 		if msg.OID != "" {
 			p.headOID = msg.OID
 		}
@@ -402,6 +401,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		if selected == "" || selected == p.selectedRepo {
 			return p, nil
 		}
+		p.savePendingChanges()
 		p.selectedRepo = selected
 		p.loading = true
 		p.error = ""
@@ -765,6 +765,11 @@ func (p *Program) buildInstallURL() string {
 func (p *Program) resolveSelectedRepo() string {
 	if candidate := strings.TrimSpace(p.selectedRepo); candidate != "" && p.repoInList(candidate) {
 		return candidate
+	}
+	for _, repo := range p.repos {
+		if loadPendingChanges(repo.FullName) != nil {
+			return repo.FullName
+		}
 	}
 	if candidate := strings.TrimSpace(p.cfg.DefaultRepo); candidate != "" && p.repoInList(candidate) {
 		return candidate
@@ -2422,12 +2427,12 @@ func (p *Program) savePendingChanges() {
 	pending.Save(localStorage, p.selectedRepo, p.generateKanbanMarkdown(), p.generateArchiveMarkdown())
 }
 
-func loadPendingChanges() *pending.Changes {
-	return pending.Load(localStorage)
+func loadPendingChanges(repo string) *pending.Changes {
+	return pending.Load(localStorage, repo)
 }
 
-func clearPendingChanges() {
-	pending.Clear(localStorage)
+func clearPendingChanges(repo string) {
+	pending.Clear(localStorage, repo)
 }
 
 func (p *Program) buildTodoItems() []todoItem {

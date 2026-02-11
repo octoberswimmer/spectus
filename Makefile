@@ -5,7 +5,7 @@ run:
 	go run .
 
 dev:
-	gin --all --pre-build make build --make run
+	gin --pre-build make build --make run
 
 build: static/main.wasm static/wasm_exec.js
 
