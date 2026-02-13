@@ -11,6 +11,7 @@ type Changes struct {
 	Repo            string `json:"repo"`
 	KanbanMarkdown  string `json:"kanban"`
 	ArchiveMarkdown string `json:"archive"`
+	CommitMessage   string `json:"commitMessage,omitempty"`
 }
 
 type Storage interface {
@@ -23,11 +24,12 @@ func storageKey(repo string) string {
 	return StorageKeyPrefix + strings.ToLower(repo)
 }
 
-func Save(storage Storage, repo, kanbanMarkdown, archiveMarkdown string) error {
+func Save(storage Storage, repo, kanbanMarkdown, archiveMarkdown, commitMessage string) error {
 	data := Changes{
 		Repo:            repo,
 		KanbanMarkdown:  kanbanMarkdown,
 		ArchiveMarkdown: archiveMarkdown,
+		CommitMessage:   commitMessage,
 	}
 	jsonData, err := json.Marshal(data)
 	if err != nil {

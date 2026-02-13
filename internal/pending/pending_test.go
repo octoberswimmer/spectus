@@ -28,7 +28,7 @@ func (m *mockStorage) RemoveItem(key string) {
 func TestSaveAndLoad(t *testing.T) {
 	storage := newMockStorage()
 
-	err := Save(storage, "owner/repo", "# Kanban\n", "# Archive\n")
+	err := Save(storage, "owner/repo", "# Kanban\n", "# Archive\n", "Fix bug")
 	if err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
@@ -46,6 +46,9 @@ func TestSaveAndLoad(t *testing.T) {
 	}
 	if loaded.ArchiveMarkdown != "# Archive\n" {
 		t.Errorf("ArchiveMarkdown = %q, want %q", loaded.ArchiveMarkdown, "# Archive\n")
+	}
+	if loaded.CommitMessage != "Fix bug" {
+		t.Errorf("CommitMessage = %q, want %q", loaded.CommitMessage, "Fix bug")
 	}
 }
 
@@ -71,7 +74,7 @@ func TestLoadInvalidJSON(t *testing.T) {
 func TestClear(t *testing.T) {
 	storage := newMockStorage()
 
-	Save(storage, "owner/repo", "# Kanban\n", "# Archive\n")
+	Save(storage, "owner/repo", "# Kanban\n", "# Archive\n", "")
 	Clear(storage, "owner/repo")
 
 	loaded := Load(storage, "owner/repo")
@@ -140,7 +143,7 @@ Some description here.
 - completed: 2024-01-10
 `
 
-	err := Save(storage, "myorg/myrepo", kanban, archive)
+	err := Save(storage, "myorg/myrepo", kanban, archive, "")
 	if err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
@@ -161,8 +164,8 @@ Some description here.
 func TestPerRepoStorage(t *testing.T) {
 	storage := newMockStorage()
 
-	Save(storage, "owner/repo-a", "# Kanban A\n", "# Archive A\n")
-	Save(storage, "owner/repo-b", "# Kanban B\n", "# Archive B\n")
+	Save(storage, "owner/repo-a", "# Kanban A\n", "# Archive A\n", "")
+	Save(storage, "owner/repo-b", "# Kanban B\n", "# Archive B\n", "")
 
 	loadedA := Load(storage, "owner/repo-a")
 	if loadedA == nil {
@@ -193,7 +196,7 @@ func TestPerRepoStorage(t *testing.T) {
 func TestCaseInsensitiveRepoKey(t *testing.T) {
 	storage := newMockStorage()
 
-	Save(storage, "Owner/Repo", "# Kanban\n", "# Archive\n")
+	Save(storage, "Owner/Repo", "# Kanban\n", "# Archive\n", "")
 
 	loaded := Load(storage, "owner/repo")
 	if loaded == nil {
@@ -213,7 +216,7 @@ func TestCaseInsensitiveRepoKey(t *testing.T) {
 func TestPendingChangesPreservedAcrossRepoSwitch(t *testing.T) {
 	storage := newMockStorage()
 
-	Save(storage, "owner/repo-a", "# Kanban A\n", "# Archive A\n")
+	Save(storage, "owner/repo-a", "# Kanban A\n", "# Archive A\n", "")
 
 	savedA := Load(storage, "owner/repo-a")
 	if savedA == nil {

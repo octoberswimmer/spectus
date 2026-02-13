@@ -178,6 +178,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 			p.config = config
 			p.tasks = tasks
 			p.archived = parseArchive(saved.ArchiveMarkdown)
+			p.commitMessageDraft = saved.CommitMessage
 			p.lastSavedKanban = msg.KanbanContent
 			p.lastSavedArchive = msg.ArchiveContent
 			statusCmd := p.setStatus("Session restored. You have uncommitted changes.", true)
@@ -2424,7 +2425,7 @@ func (p *Program) savePendingChanges() {
 	if !p.hasPendingCommitChanges() {
 		return
 	}
-	pending.Save(localStorage, p.selectedRepo, p.generateKanbanMarkdown(), p.generateArchiveMarkdown())
+	pending.Save(localStorage, p.selectedRepo, p.generateKanbanMarkdown(), p.generateArchiveMarkdown(), p.commitMessageDraft)
 }
 
 func loadPendingChanges(repo string) *pending.Changes {
