@@ -2710,6 +2710,13 @@ func (p *Program) renderNotification() masc.ComponentOrHTML {
 }
 
 func (p *Program) handleSaveTask() (masc.Model, masc.Cmd) {
+	// Add pending subtask if the new subtask input is populated
+	if text := strings.TrimSpace(p.newSubtaskText); text != "" {
+		p.form.Subtasks = append(p.form.Subtasks, Subtask{Text: text, DueDate: normalizeDueDate(p.newSubtaskDue)})
+		p.newSubtaskText = ""
+		p.newSubtaskDue = ""
+	}
+
 	form := p.form
 	title := strings.TrimSpace(form.Title)
 	status := strings.TrimSpace(form.Status)
