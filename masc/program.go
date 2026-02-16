@@ -210,7 +210,6 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		}
 		p.modal = ModalCommit
 		p.error = ""
-		p.commitMessageDraft = ""
 		p.commitDiff = buildCommitDiff(p.repo, p.lastSavedKanban, p.lastSavedArchive, p.generateKanbanMarkdown(), p.generateArchiveMarkdown())
 		return p, nil
 	case CommitResult:
@@ -241,6 +240,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 			p.pendingCommitArchive = ""
 		}
 		clearPendingChanges(p.repo.Repo)
+		p.commitMessageDraft = ""
 		if msg.OID != "" {
 			p.headOID = msg.OID
 		}
@@ -343,7 +343,6 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		case ModalArchive:
 			p.archiveSearch = ""
 		case ModalCommit:
-			p.commitMessageDraft = ""
 			p.commitDiff = buildCommitDiff(p.repo, p.lastSavedKanban, p.lastSavedArchive, p.generateKanbanMarkdown(), p.generateArchiveMarkdown())
 		}
 		return p, nil
