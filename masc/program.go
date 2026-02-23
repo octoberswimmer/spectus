@@ -181,6 +181,8 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 			p.commitMessageDraft = saved.CommitMessage
 			p.lastSavedKanban = msg.KanbanContent
 			p.lastSavedArchive = msg.ArchiveContent
+			p.modal = ModalCommit
+			p.commitDiff = buildCommitDiff(p.repo, p.lastSavedKanban, p.lastSavedArchive, p.generateKanbanMarkdown(), p.generateArchiveMarkdown())
 			statusCmd := p.setStatus("Session restored. You have uncommitted changes.", true)
 			return p, batchCmds(statusCmd, p.sseListenCmd())
 		}
@@ -2421,7 +2423,7 @@ func (l localStorageAdapter) RemoveItem(key string) {
 var localStorage pending.Storage = localStorageAdapter{}
 
 func (p *Program) savePendingChanges() {
-	if !p.hasPendingCommitChanges() {
+	if !p.repoLoaded || !p.hasPendingCommitChanges() {
 		return
 	}
 	pending.Save(localStorage, p.selectedRepo, p.generateKanbanMarkdown(), p.generateArchiveMarkdown(), p.commitMessageDraft)
