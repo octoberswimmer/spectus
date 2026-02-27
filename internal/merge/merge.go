@@ -186,3 +186,47 @@ func SubtasksEqual(a, b []Subtask) bool {
 	}
 	return true
 }
+
+// DeleteTaskByID removes a task from either the tasks or archived slice.
+// It first checks tasks, then archived. Returns the modified slices and
+// whether a task was deleted.
+func DeleteTaskByID(taskID string, tasks, archived []Task) ([]Task, []Task, bool) {
+	for i, task := range tasks {
+		if task.ID == taskID {
+			return append(tasks[:i], tasks[i+1:]...), archived, true
+		}
+	}
+	for i, task := range archived {
+		if task.ID == taskID {
+			return tasks, append(archived[:i], archived[i+1:]...), true
+		}
+	}
+	return tasks, archived, false
+}
+
+// Identifiable is any type that has an ID field.
+type Identifiable interface {
+	GetID() string
+}
+
+// DeleteByID removes an item from either the first or second slice.
+// It first checks the first slice, then the second. Returns the modified
+// slices and whether an item was deleted.
+func DeleteByID[T Identifiable](id string, first, second []T) ([]T, []T, bool) {
+	for i, item := range first {
+		if item.GetID() == id {
+			return append(first[:i], first[i+1:]...), second, true
+		}
+	}
+	for i, item := range second {
+		if item.GetID() == id {
+			return first, append(second[:i], second[i+1:]...), true
+		}
+	}
+	return first, second, false
+}
+
+// GetID implements Identifiable for Task.
+func (t Task) GetID() string {
+	return t.ID
+}

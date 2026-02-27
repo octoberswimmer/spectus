@@ -65,6 +65,10 @@ type Task struct {
 	Notes       string
 }
 
+func (t Task) GetID() string {
+	return t.ID
+}
+
 type Subtask struct {
 	Completed bool
 	Text      string

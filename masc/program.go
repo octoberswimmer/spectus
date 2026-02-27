@@ -16,6 +16,7 @@ import (
 	"github.com/octoberswimmer/masc/elem"
 	"github.com/octoberswimmer/masc/event"
 	"github.com/octoberswimmer/spectus/internal/markdown"
+	"github.com/octoberswimmer/spectus/internal/merge"
 	"github.com/octoberswimmer/spectus/internal/pending"
 )
 
@@ -2811,12 +2812,15 @@ func (p *Program) handleSaveTask() (masc.Model, masc.Cmd) {
 }
 
 func (p *Program) deleteTaskByID(taskID string) {
-	idx := p.taskIndexByID(taskID)
-	if idx < 0 {
-		return
+	oldTasksLen := len(p.tasks)
+	tasks, archived, deleted := merge.DeleteByID(taskID, p.tasks, p.archived)
+	if deleted {
+		p.tasks = tasks
+		p.archived = archived
+		if len(tasks) < oldTasksLen {
+			p.modal = ModalNone
+		}
 	}
-	p.tasks = append(p.tasks[:idx], p.tasks[idx+1:]...)
-	p.modal = ModalNone
 }
 
 func (p *Program) archiveTask(taskID string) {

@@ -1277,3 +1277,155 @@ func TestMergeTaskAllProperties(t *testing.T) {
 		t.Errorf("Modified: expected remote time (most recent), got %q", result.Modified)
 	}
 }
+
+func TestDeleteTaskByID(t *testing.T) {
+	t.Run("deletes_task_from_tasks_list", func(t *testing.T) {
+		tasks := []Task{
+			{ID: "TASK-001", Title: "Task 1"},
+			{ID: "TASK-002", Title: "Task 2"},
+			{ID: "TASK-003", Title: "Task 3"},
+		}
+		archived := []Task{}
+
+		newTasks, newArchived, deleted := DeleteTaskByID("TASK-002", tasks, archived)
+
+		if !deleted {
+			t.Error("expected deleted to be true")
+		}
+		if len(newTasks) != 2 {
+			t.Errorf("expected 2 tasks, got %d", len(newTasks))
+		}
+		for _, task := range newTasks {
+			if task.ID == "TASK-002" {
+				t.Error("TASK-002 should have been deleted")
+			}
+		}
+		if len(newArchived) != 0 {
+			t.Errorf("expected 0 archived tasks, got %d", len(newArchived))
+		}
+	})
+
+	t.Run("deletes_task_from_archived_list", func(t *testing.T) {
+		tasks := []Task{}
+		archived := []Task{
+			{ID: "TASK-001", Title: "Archived 1"},
+			{ID: "TASK-002", Title: "Archived 2"},
+			{ID: "TASK-003", Title: "Archived 3"},
+		}
+
+		newTasks, newArchived, deleted := DeleteTaskByID("TASK-002", tasks, archived)
+
+		if !deleted {
+			t.Error("expected deleted to be true")
+		}
+		if len(newArchived) != 2 {
+			t.Errorf("expected 2 archived tasks, got %d", len(newArchived))
+		}
+		for _, task := range newArchived {
+			if task.ID == "TASK-002" {
+				t.Error("TASK-002 should have been deleted from archives")
+			}
+		}
+		if len(newTasks) != 0 {
+			t.Errorf("expected 0 tasks, got %d", len(newTasks))
+		}
+	})
+
+	t.Run("prefers_tasks_over_archived_when_same_id_exists", func(t *testing.T) {
+		tasks := []Task{
+			{ID: "TASK-001", Title: "Active Task"},
+		}
+		archived := []Task{
+			{ID: "TASK-001", Title: "Archived Task"},
+		}
+
+		newTasks, newArchived, deleted := DeleteTaskByID("TASK-001", tasks, archived)
+
+		if !deleted {
+			t.Error("expected deleted to be true")
+		}
+		if len(newTasks) != 0 {
+			t.Errorf("expected 0 tasks, got %d", len(newTasks))
+		}
+		if len(newArchived) != 1 {
+			t.Errorf("expected 1 archived task (unchanged), got %d", len(newArchived))
+		}
+	})
+
+	t.Run("returns_false_when_task_not_found", func(t *testing.T) {
+		tasks := []Task{
+			{ID: "TASK-001", Title: "Task 1"},
+		}
+		archived := []Task{
+			{ID: "TASK-002", Title: "Archived 1"},
+		}
+
+		newTasks, newArchived, deleted := DeleteTaskByID("TASK-999", tasks, archived)
+
+		if deleted {
+			t.Error("expected deleted to be false")
+		}
+		if len(newTasks) != 1 {
+			t.Errorf("expected 1 task, got %d", len(newTasks))
+		}
+		if len(newArchived) != 1 {
+			t.Errorf("expected 1 archived task, got %d", len(newArchived))
+		}
+	})
+
+	t.Run("deletes_first_task_in_list", func(t *testing.T) {
+		tasks := []Task{
+			{ID: "TASK-001", Title: "Task 1"},
+			{ID: "TASK-002", Title: "Task 2"},
+		}
+		archived := []Task{}
+
+		newTasks, _, deleted := DeleteTaskByID("TASK-001", tasks, archived)
+
+		if !deleted {
+			t.Error("expected deleted to be true")
+		}
+		if len(newTasks) != 1 {
+			t.Errorf("expected 1 task, got %d", len(newTasks))
+		}
+		if newTasks[0].ID != "TASK-002" {
+			t.Errorf("expected TASK-002 to remain, got %s", newTasks[0].ID)
+		}
+	})
+
+	t.Run("deletes_last_task_in_list", func(t *testing.T) {
+		tasks := []Task{
+			{ID: "TASK-001", Title: "Task 1"},
+			{ID: "TASK-002", Title: "Task 2"},
+		}
+		archived := []Task{}
+
+		newTasks, _, deleted := DeleteTaskByID("TASK-002", tasks, archived)
+
+		if !deleted {
+			t.Error("expected deleted to be true")
+		}
+		if len(newTasks) != 1 {
+			t.Errorf("expected 1 task, got %d", len(newTasks))
+		}
+		if newTasks[0].ID != "TASK-001" {
+			t.Errorf("expected TASK-001 to remain, got %s", newTasks[0].ID)
+		}
+	})
+
+	t.Run("deletes_only_task_in_archived_list", func(t *testing.T) {
+		tasks := []Task{}
+		archived := []Task{
+			{ID: "TASK-001", Title: "Only Archived"},
+		}
+
+		_, newArchived, deleted := DeleteTaskByID("TASK-001", tasks, archived)
+
+		if !deleted {
+			t.Error("expected deleted to be true")
+		}
+		if len(newArchived) != 0 {
+			t.Errorf("expected 0 archived tasks, got %d", len(newArchived))
+		}
+	})
+}
