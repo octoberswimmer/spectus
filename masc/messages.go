@@ -239,6 +239,12 @@ type OpenDetailFromTodo struct {
 
 type Logout struct{}
 
+type SessionCheckTick struct{}
+
+type SessionCheckResult struct {
+	Unauthorized bool
+}
+
 type SSEReload struct {
 	Repo    string
 	HeadOID string

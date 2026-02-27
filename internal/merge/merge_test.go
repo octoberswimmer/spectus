@@ -928,6 +928,264 @@ func TestConflictResolutionScenarios(t *testing.T) {
 	})
 }
 
+// TestSessionRestoreScenarios tests merge scenarios that occur during session restoration
+// when local changes were saved to localStorage and remote has changed while session was expired
+func TestSessionRestoreScenarios(t *testing.T) {
+	t.Run("session_restore_remote_unchanged", func(t *testing.T) {
+		// User made changes, session expired, but no one else touched the repo
+		// Base == Remote, so local changes should be preserved exactly
+		baseTask := Task{
+			ID:     "TASK-001",
+			Title:  "Original Task",
+			Status: "todo",
+		}
+		base := []Task{baseTask}
+
+		localTask := baseTask
+		localTask.Title = "User's Local Changes"
+		localTask.Status = "in-progress"
+		local := []Task{localTask}
+
+		// Remote is same as base (no changes while session was expired)
+		remote := base
+
+		tasks := MergeTaskLists(base, local, remote)
+
+		if len(tasks) != 1 {
+			t.Fatalf("expected 1 task, got %d", len(tasks))
+		}
+		if tasks[0].Title != "User's Local Changes" {
+			t.Errorf("expected local title, got %q", tasks[0].Title)
+		}
+		if tasks[0].Status != "in-progress" {
+			t.Errorf("expected local status 'in-progress', got %q", tasks[0].Status)
+		}
+	})
+
+	t.Run("session_restore_remote_changed_different_task", func(t *testing.T) {
+		// User edited task1, remote added task2 while session expired
+		task1 := Task{ID: "TASK-001", Title: "Task 1", Status: "todo"}
+		base := []Task{task1}
+
+		localTask1 := task1
+		localTask1.Title = "Task 1 Edited"
+		local := []Task{localTask1}
+
+		task2 := Task{ID: "TASK-002", Title: "New Remote Task", Status: "todo"}
+		remote := []Task{task1, task2}
+
+		tasks := MergeTaskLists(base, local, remote)
+
+		if len(tasks) != 2 {
+			t.Fatalf("expected 2 tasks, got %d", len(tasks))
+		}
+
+		taskMap := make(map[string]Task)
+		for _, task := range tasks {
+			taskMap[task.ID] = task
+		}
+
+		if taskMap["TASK-001"].Title != "Task 1 Edited" {
+			t.Errorf("expected local edits preserved, got %q", taskMap["TASK-001"].Title)
+		}
+		if _, exists := taskMap["TASK-002"]; !exists {
+			t.Error("expected remote task to be included")
+		}
+	})
+
+	t.Run("session_restore_remote_changed_same_task", func(t *testing.T) {
+		// User edited task, collaborator also edited same task while session expired
+		baseTask := Task{
+			ID:          "TASK-001",
+			Title:       "Original Title",
+			Status:      "todo",
+			Description: "Original desc",
+		}
+		base := []Task{baseTask}
+
+		// Local: changed title
+		localTask := baseTask
+		localTask.Title = "My New Title"
+		local := []Task{localTask}
+
+		// Remote: changed description (different property)
+		remoteTask := baseTask
+		remoteTask.Description = "Collaborator's description"
+		remote := []Task{remoteTask}
+
+		tasks := MergeTaskLists(base, local, remote)
+
+		if len(tasks) != 1 {
+			t.Fatalf("expected 1 task, got %d", len(tasks))
+		}
+
+		// Both changes should be preserved
+		if tasks[0].Title != "My New Title" {
+			t.Errorf("expected local title, got %q", tasks[0].Title)
+		}
+		if tasks[0].Description != "Collaborator's description" {
+			t.Errorf("expected remote description, got %q", tasks[0].Description)
+		}
+	})
+
+	t.Run("session_restore_local_added_remote_added", func(t *testing.T) {
+		// Both user and collaborator added new tasks while session was expired
+		base := []Task{}
+
+		localTask := Task{ID: "TASK-LOCAL", Title: "My New Task", Status: "todo"}
+		local := []Task{localTask}
+
+		remoteTask := Task{ID: "TASK-REMOTE", Title: "Collaborator's Task", Status: "todo"}
+		remote := []Task{remoteTask}
+
+		tasks := MergeTaskLists(base, local, remote)
+
+		if len(tasks) != 2 {
+			t.Fatalf("expected 2 tasks, got %d", len(tasks))
+		}
+
+		taskMap := make(map[string]Task)
+		for _, task := range tasks {
+			taskMap[task.ID] = task
+		}
+
+		if _, exists := taskMap["TASK-LOCAL"]; !exists {
+			t.Error("expected local task to be included")
+		}
+		if _, exists := taskMap["TASK-REMOTE"]; !exists {
+			t.Error("expected remote task to be included")
+		}
+	})
+
+	t.Run("session_restore_local_deleted_remote_modified", func(t *testing.T) {
+		// User deleted a task, but collaborator modified it while session expired
+		// Local delete should win (user's intent)
+		baseTask := Task{ID: "TASK-001", Title: "Original", Status: "todo"}
+		base := []Task{baseTask}
+
+		local := []Task{} // User deleted
+
+		remoteTask := baseTask
+		remoteTask.Title = "Collaborator Modified This"
+		remote := []Task{remoteTask}
+
+		tasks := MergeTaskLists(base, local, remote)
+
+		if len(tasks) != 0 {
+			t.Errorf("expected 0 tasks (local delete wins), got %d", len(tasks))
+		}
+	})
+
+	t.Run("session_restore_conflict_same_property", func(t *testing.T) {
+		// Both user and collaborator changed the same property
+		// Local should win (user's most recent intent)
+		baseTask := Task{ID: "TASK-001", Title: "Original", Status: "todo"}
+		base := []Task{baseTask}
+
+		localTask := baseTask
+		localTask.Title = "User's Title"
+		local := []Task{localTask}
+
+		remoteTask := baseTask
+		remoteTask.Title = "Collaborator's Title"
+		remote := []Task{remoteTask}
+
+		tasks := MergeTaskLists(base, local, remote)
+
+		if len(tasks) != 1 {
+			t.Fatalf("expected 1 task, got %d", len(tasks))
+		}
+		if tasks[0].Title != "User's Title" {
+			t.Errorf("expected local title on conflict, got %q", tasks[0].Title)
+		}
+	})
+
+	t.Run("session_restore_subtask_changes", func(t *testing.T) {
+		// User completed a subtask, remote is unchanged
+		baseTask := Task{
+			ID:     "TASK-001",
+			Title:  "Task",
+			Status: "todo",
+			Subtasks: []Subtask{
+				{Text: "Subtask 1", Completed: false},
+				{Text: "Subtask 2", Completed: false},
+			},
+		}
+		base := []Task{baseTask}
+
+		localTask := baseTask
+		localTask.Subtasks = []Subtask{
+			{Text: "Subtask 1", Completed: true}, // Completed this one
+			{Text: "Subtask 2", Completed: false},
+		}
+		local := []Task{localTask}
+
+		remote := base // Unchanged
+
+		tasks := MergeTaskLists(base, local, remote)
+
+		if len(tasks) != 1 {
+			t.Fatalf("expected 1 task, got %d", len(tasks))
+		}
+		if !tasks[0].Subtasks[0].Completed {
+			t.Error("expected first subtask to be completed")
+		}
+	})
+
+	t.Run("session_restore_long_session_many_remote_changes", func(t *testing.T) {
+		// Simulates a long session expiration where many remote changes happened
+		task1 := Task{ID: "TASK-001", Title: "Task 1", Status: "todo"}
+		task2 := Task{ID: "TASK-002", Title: "Task 2", Status: "todo"}
+		base := []Task{task1, task2}
+
+		// Local: only modified task1's title
+		localTask1 := task1
+		localTask1.Title = "My Edit to Task 1"
+		local := []Task{localTask1, task2}
+
+		// Remote: task1 moved to done, task2 archived (deleted), task3 and task4 added
+		remoteTask1 := task1
+		remoteTask1.Status = "done"
+		task3 := Task{ID: "TASK-003", Title: "New Task 3", Status: "todo"}
+		task4 := Task{ID: "TASK-004", Title: "New Task 4", Status: "in-progress"}
+		remote := []Task{remoteTask1, task3, task4} // task2 removed
+
+		tasks := MergeTaskLists(base, local, remote)
+
+		// Expected:
+		// - task1: local title + remote status
+		// - task2: kept (local didn't delete it, but remote did - local unchanged so remote delete wins? Actually no, if local has task and is unchanged, remote delete wins)
+		// - task3: added from remote
+		// - task4: added from remote
+
+		taskMap := make(map[string]Task)
+		for _, task := range tasks {
+			taskMap[task.ID] = task
+		}
+
+		// Task1: merged
+		if taskMap["TASK-001"].Title != "My Edit to Task 1" {
+			t.Errorf("task1: expected local title, got %q", taskMap["TASK-001"].Title)
+		}
+		if taskMap["TASK-001"].Status != "done" {
+			t.Errorf("task1: expected remote status 'done', got %q", taskMap["TASK-001"].Status)
+		}
+
+		// Task2: remote deleted, local unchanged -> deleted
+		if _, exists := taskMap["TASK-002"]; exists {
+			t.Error("task2 should be deleted (remote delete, local unchanged)")
+		}
+
+		// Task3 and Task4: added from remote
+		if _, exists := taskMap["TASK-003"]; !exists {
+			t.Error("task3 should exist (added remotely)")
+		}
+		if _, exists := taskMap["TASK-004"]; !exists {
+			t.Error("task4 should exist (added remotely)")
+		}
+	})
+}
+
 // TestMergeTaskAllProperties tests merging when all properties are independently changed
 func TestMergeTaskAllProperties(t *testing.T) {
 	base := Task{

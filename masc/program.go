@@ -174,17 +174,37 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		saved := loadPendingChanges(msg.Repo.Repo)
 		if saved != nil {
 			clearPendingChanges(msg.Repo.Repo)
-			config, tasks := parseKanban(saved.KanbanMarkdown)
-			p.config = config
-			p.tasks = tasks
-			p.archived = parseArchive(saved.ArchiveMarkdown)
-			p.commitMessageDraft = saved.CommitMessage
 			p.lastSavedKanban = msg.KanbanContent
 			p.lastSavedArchive = msg.ArchiveContent
+			p.commitMessageDraft = saved.CommitMessage
+
+			// Check if remote has changed since we saved our local changes
+			remoteKanbanChanged := saved.BaseKanbanMarkdown != "" && saved.BaseKanbanMarkdown != msg.KanbanContent
+			remoteArchiveChanged := saved.BaseArchiveMarkdown != "" && saved.BaseArchiveMarkdown != msg.ArchiveContent
+
+			if remoteKanbanChanged || remoteArchiveChanged {
+				// Remote changed - perform 3-way merge
+				mergedConfig, mergedTasks := mergeKanban(saved.BaseKanbanMarkdown, saved.KanbanMarkdown, msg.KanbanContent)
+				p.config = mergedConfig
+				p.tasks = mergedTasks
+				mergedArchive := mergeArchive(saved.BaseArchiveMarkdown, saved.ArchiveMarkdown, msg.ArchiveContent)
+				p.archived = mergedArchive
+			} else {
+				// Remote unchanged - restore saved state directly
+				config, tasks := parseKanban(saved.KanbanMarkdown)
+				p.config = config
+				p.tasks = tasks
+				p.archived = parseArchive(saved.ArchiveMarkdown)
+			}
+
 			p.modal = ModalCommit
 			p.commitDiff = buildCommitDiff(p.repo, p.lastSavedKanban, p.lastSavedArchive, p.generateKanbanMarkdown(), p.generateArchiveMarkdown())
-			statusCmd := p.setStatus("Session restored. You have uncommitted changes.", true)
-			return p, batchCmds(statusCmd, p.sseListenCmd())
+			statusMsg := "Session restored. You have uncommitted changes."
+			if remoteKanbanChanged || remoteArchiveChanged {
+				statusMsg = "Session restored. Remote changes merged with your uncommitted changes."
+			}
+			statusCmd := p.setStatus(statusMsg, true)
+			return p, batchCmds(statusCmd, p.sseListenCmd(), p.sessionCheckTickCmd())
 		}
 
 		statusCmd := p.setStatus("Repository loaded.", true)
@@ -205,7 +225,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		p.archived = parseArchive(archiveContent)
 		p.lastSavedArchive = msg.ArchiveContent
 
-		return p, batchCmds(statusCmd, p.sseListenCmd())
+		return p, batchCmds(statusCmd, p.sseListenCmd(), p.sessionCheckTickCmd())
 	case CommitChanges:
 		if !p.repoLoaded || p.commitInProgress || !p.hasPendingCommitChanges() {
 			return p, nil
@@ -607,6 +627,17 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 	case SSEError:
 		// Retry with exponential backoff
 		return p, p.sseListenWithBackoff(msg.RetryDelay)
+	case SessionCheckTick:
+		if !p.loggedIn || !p.repoLoaded {
+			return p, nil
+		}
+		return p, p.sessionCheckCmd()
+	case SessionCheckResult:
+		if msg.Unauthorized {
+			return p.handleUnauthorized()
+		}
+		// Token still valid, schedule next check
+		return p, p.sessionCheckTickCmd()
 	}
 
 	return p, nil
@@ -2426,7 +2457,7 @@ func (p *Program) savePendingChanges() {
 	if !p.repoLoaded || !p.hasPendingCommitChanges() {
 		return
 	}
-	pending.Save(localStorage, p.selectedRepo, p.generateKanbanMarkdown(), p.generateArchiveMarkdown(), p.commitMessageDraft)
+	pending.Save(localStorage, p.selectedRepo, p.generateKanbanMarkdown(), p.generateArchiveMarkdown(), p.commitMessageDraft, p.lastSavedKanban, p.lastSavedArchive)
 }
 
 func loadPendingChanges(repo string) *pending.Changes {

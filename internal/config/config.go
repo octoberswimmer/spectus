@@ -51,7 +51,7 @@ func Load() Config {
 		DefaultRepo:       strings.TrimSpace(os.Getenv("KANBAN_REPO")),
 		KanbanPath:        envOr("KANBAN_PATH", "kanban.md"),
 		ArchivePath:       envOr("ARCHIVE_PATH", "archive.md"),
-		SessionCookieName: envOr("SESSION_COOKIE", "kanban_session"),
+		SessionCookieName: envOr("SESSION_COOKIE", "spectus_session"),
 		WebhookSecret:     strings.TrimSpace(os.Getenv("GITHUB_WEBHOOK_SECRET")),
 	}
 

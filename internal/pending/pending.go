@@ -8,10 +8,12 @@ import (
 const StorageKeyPrefix = "spectus_pending_"
 
 type Changes struct {
-	Repo            string `json:"repo"`
-	KanbanMarkdown  string `json:"kanban"`
-	ArchiveMarkdown string `json:"archive"`
-	CommitMessage   string `json:"commitMessage,omitempty"`
+	Repo                string `json:"repo"`
+	KanbanMarkdown      string `json:"kanban"`
+	ArchiveMarkdown     string `json:"archive"`
+	CommitMessage       string `json:"commitMessage,omitempty"`
+	BaseKanbanMarkdown  string `json:"baseKanban,omitempty"`
+	BaseArchiveMarkdown string `json:"baseArchive,omitempty"`
 }
 
 type Storage interface {
@@ -24,12 +26,14 @@ func storageKey(repo string) string {
 	return StorageKeyPrefix + strings.ToLower(repo)
 }
 
-func Save(storage Storage, repo, kanbanMarkdown, archiveMarkdown, commitMessage string) error {
+func Save(storage Storage, repo, kanbanMarkdown, archiveMarkdown, commitMessage, baseKanban, baseArchive string) error {
 	data := Changes{
-		Repo:            repo,
-		KanbanMarkdown:  kanbanMarkdown,
-		ArchiveMarkdown: archiveMarkdown,
-		CommitMessage:   commitMessage,
+		Repo:                repo,
+		KanbanMarkdown:      kanbanMarkdown,
+		ArchiveMarkdown:     archiveMarkdown,
+		CommitMessage:       commitMessage,
+		BaseKanbanMarkdown:  baseKanban,
+		BaseArchiveMarkdown: baseArchive,
 	}
 	jsonData, err := json.Marshal(data)
 	if err != nil {

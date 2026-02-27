@@ -54,7 +54,7 @@ Optional:
 - `PORT`: Used if `ADDR` is not set.
 - `PUBLIC_URL`: Base URL for OAuth callback and secure cookie flag. Default derived from `ADDR`.
 - `GITHUB_SCOPES`: Comma-separated scopes. Default `repo,read:user`.
-- `SESSION_COOKIE`: Cookie name. Default `kanban_session`.
+- `SESSION_COOKIE`: Cookie name. Default `spectus_session`.
 - `KANBAN_REPO`: Default repo in `owner/name` form (shown in the UI).
 - `KANBAN_PATH`: Default kanban path. Default `kanban.md`.
 - `ARCHIVE_PATH`: Default archive path. Default `archive.md`.
