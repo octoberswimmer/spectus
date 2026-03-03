@@ -130,25 +130,3 @@ func closeActiveSSE() {
 	activeSSE = js.Undefined()
 	activeSSERepo = ""
 }
-
-const sessionCheckInterval = 5 * time.Minute
-
-// sessionCheckTickCmd schedules the next session check after a delay
-func (p *Program) sessionCheckTickCmd() masc.Cmd {
-	return masc.Tick(sessionCheckInterval, func(t time.Time) masc.Msg {
-		return SessionCheckTick{}
-	})
-}
-
-// sessionCheckCmd performs a lightweight API call to validate the token
-func (p *Program) sessionCheckCmd() masc.Cmd {
-	token := p.token
-	return func() masc.Msg {
-		client := &GraphQLClient{Token: token}
-		_, err := fetchViewer(client)
-		if err != nil {
-			return SessionCheckResult{Unauthorized: isUnauthorized(err)}
-		}
-		return SessionCheckResult{Unauthorized: false}
-	}
-}

@@ -22,6 +22,16 @@ import (
 
 var idRand = rand.New(rand.NewSource(time.Now().UnixNano()))
 
+// retryAction indicates what operation to retry after token refresh
+type retryAction string
+
+const (
+	retryNone       retryAction = ""
+	retryFetchRepos retryAction = "fetch_repos"
+	retryLoadRepo   retryAction = "load_repo"
+	retryCommit     retryAction = "commit"
+)
+
 type TaskForm struct {
 	ID          string
 	Title       string
@@ -42,6 +52,7 @@ type Program struct {
 	cfg           ClientConfig
 	appInstallURL string
 
+	session  Session
 	token    string
 	loggedIn bool
 	viewer   User
@@ -75,6 +86,7 @@ type Program struct {
 
 	loading          bool
 	commitInProgress bool
+	pendingRetry     retryAction
 	error            string
 	status           string
 	statusSeq        int
@@ -117,7 +129,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		return p, batchCmds(statusCmd, p.fetchReposCmd())
 	case ReposLoaded:
 		if msg.Unauthorized {
-			return p.handleUnauthorized()
+			return p.handleUnauthorized(retryFetchRepos)
 		}
 		p.loading = false
 		if msg.Error != "" {
@@ -143,7 +155,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		return p, batchCmds(statusCmd, p.saveRepoSelectionCmd(selected), p.loadRepoCmd())
 	case LoadError:
 		if msg.Unauthorized {
-			return p.handleUnauthorized()
+			return p.handleUnauthorized(retryLoadRepo)
 		}
 		p.loading = false
 		p.commitInProgress = false
@@ -205,7 +217,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 				statusMsg = "Session restored. Remote changes merged with your uncommitted changes."
 			}
 			statusCmd := p.setStatus(statusMsg, true)
-			return p, batchCmds(statusCmd, p.sseListenCmd(), p.sessionCheckTickCmd())
+			return p, batchCmds(statusCmd, p.sseListenCmd())
 		}
 
 		statusCmd := p.setStatus("Repository loaded.", true)
@@ -226,7 +238,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		p.archived = parseArchive(archiveContent)
 		p.lastSavedArchive = msg.ArchiveContent
 
-		return p, batchCmds(statusCmd, p.sseListenCmd(), p.sessionCheckTickCmd())
+		return p, batchCmds(statusCmd, p.sseListenCmd())
 	case CommitChanges:
 		if !p.repoLoaded || p.commitInProgress || !p.hasPendingCommitChanges() {
 			return p, nil
@@ -237,7 +249,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		return p, nil
 	case CommitResult:
 		if msg.Unauthorized {
-			return p.handleUnauthorized()
+			return p.handleUnauthorized(retryCommit)
 		}
 		if msg.StaleHead {
 			// Remote changed since we loaded. Refresh HEAD and merge.
@@ -628,17 +640,10 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 	case SSEError:
 		// Retry with exponential backoff
 		return p, p.sseListenWithBackoff(msg.RetryDelay)
-	case SessionCheckTick:
-		if !p.loggedIn || !p.repoLoaded {
-			return p, nil
-		}
-		return p, p.sessionCheckCmd()
-	case SessionCheckResult:
-		if msg.Unauthorized {
-			return p.handleUnauthorized()
-		}
-		// Token still valid, schedule next check
-		return p, p.sessionCheckTickCmd()
+	case RefreshSession:
+		return p, refreshSessionCmd()
+	case SessionRefreshed:
+		return p.handleSessionRefreshed(msg)
 	}
 
 	return p, nil
@@ -682,12 +687,14 @@ func (p *Program) handleSession(msg SetSession) (masc.Model, masc.Cmd) {
 	if session.AccessToken == "" {
 		p.loggedIn = false
 		p.token = ""
+		p.session = Session{}
 		p.repoLoaded = false
 		p.loading = false
 		p.setStatus("", false)
 		return p, nil
 	}
 	p.loggedIn = true
+	p.session = session
 	p.token = session.AccessToken
 	p.selectedRepo = strings.TrimSpace(session.SelectedRepo)
 	p.loading = true
@@ -696,12 +703,20 @@ func (p *Program) handleSession(msg SetSession) (masc.Model, masc.Cmd) {
 	return p, p.fetchViewerCmd()
 }
 
-func (p *Program) handleUnauthorized() (masc.Model, masc.Cmd) {
+func (p *Program) handleUnauthorized(retry retryAction) (masc.Model, masc.Cmd) {
+	// Try to refresh the token if we have a refresh token
+	if p.session.RefreshToken != "" {
+		p.pendingRetry = retry
+		return p, refreshSessionCmd()
+	}
+
 	p.savePendingChanges()
 	p.loggedIn = false
 	p.token = ""
+	p.session = Session{}
 	p.loading = false
 	p.commitInProgress = false
+	p.pendingRetry = retryNone
 	p.repos = nil
 	p.repoInstallRequired = false
 	p.viewer = User{}
@@ -711,6 +726,85 @@ func (p *Program) handleUnauthorized() (masc.Model, masc.Cmd) {
 	p.repoLoaded = false
 	p.selectedRepo = ""
 	return p, clearSessionCmd()
+}
+
+func refreshSessionCmd() masc.Cmd {
+	return func() masc.Msg {
+		options := map[string]interface{}{"method": "POST"}
+		respValue, err := awaitPromise(js.Global().Call("fetch", "/refresh", js.ValueOf(options)))
+		if err != nil {
+			return SessionRefreshed{Error: err.Error()}
+		}
+
+		if !respValue.Get("ok").Bool() {
+			return SessionRefreshed{Error: "failed to refresh session"}
+		}
+
+		textValue, err := awaitPromise(respValue.Call("text"))
+		if err != nil {
+			return SessionRefreshed{Error: err.Error()}
+		}
+
+		var session Session
+		if err := json.Unmarshal([]byte(textValue.String()), &session); err != nil {
+			return SessionRefreshed{Error: err.Error()}
+		}
+
+		return SessionRefreshed{Session: session}
+	}
+}
+
+func (p *Program) handleSessionRefreshed(msg SessionRefreshed) (masc.Model, masc.Cmd) {
+	if msg.Error != "" {
+		// Refresh failed, clear the session and show login
+		p.savePendingChanges()
+		p.loggedIn = false
+		p.token = ""
+		p.session = Session{}
+		p.loading = false
+		p.commitInProgress = false
+		p.pendingRetry = retryNone
+		p.repos = nil
+		p.repoInstallRequired = false
+		p.viewer = User{}
+		p.modal = ModalNone
+		p.error = "Session refresh failed. Please log in again."
+		p.setStatus("", false)
+		p.repoLoaded = false
+		p.selectedRepo = ""
+		return p, clearSessionCmd()
+	}
+
+	// Update session with refreshed token
+	p.session = msg.Session
+	p.token = msg.Session.AccessToken
+	p.error = ""
+
+	// Retry the operation that triggered the refresh
+	retry := p.pendingRetry
+	p.pendingRetry = retryNone
+
+	switch retry {
+	case retryFetchRepos:
+		p.loading = true
+		statusCmd := p.setStatus("Retrying repository fetch…", false)
+		return p, batchCmds(statusCmd, p.fetchReposCmd())
+	case retryLoadRepo:
+		p.loading = true
+		statusCmd := p.setStatus("Retrying repository load…", false)
+		return p, batchCmds(statusCmd, p.loadRepoCmd())
+	case retryCommit:
+		statusCmd := p.setStatus("Retrying commit…", false)
+		files := map[string]string{
+			p.repo.KanbanPath:  p.pendingCommitKanban,
+			p.repo.ArchivePath: p.pendingCommitArchive,
+		}
+		return p, batchCmds(statusCmd, p.commitCmd(strings.TrimSpace(p.commitMessageDraft), files))
+	default:
+		p.loading = true
+		// Re-fetch viewer to continue where we left off
+		return p, p.fetchViewerCmd()
+	}
 }
 
 func (p *Program) fetchViewerCmd() masc.Cmd {

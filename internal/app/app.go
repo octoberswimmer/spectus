@@ -19,6 +19,7 @@ type App struct {
 	cookies    *securecookie.SecureCookie
 	cookieName string
 	sseHub     *SSEHub
+	tokenURL   string // OAuth token endpoint URL, defaults to GitHub
 }
 
 type ClientConfig struct {
@@ -52,6 +53,7 @@ func (a *App) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/login", a.handleLogin)
 	mux.HandleFunc("/auth/github/callback", a.handleCallback)
 	mux.HandleFunc("/session", a.handleSession)
+	mux.HandleFunc("/refresh", a.handleRefresh)
 	mux.HandleFunc("/logout", a.handleLogout)
 	mux.HandleFunc("/webhook", a.handleWebhook)
 	mux.HandleFunc("/events", a.handleSSE)

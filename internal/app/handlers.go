@@ -1,10 +1,12 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"html/template"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -25,11 +27,13 @@ type statePayload struct {
 }
 
 type Session struct {
-	AccessToken  string `json:"access_token"`
-	TokenType    string `json:"token_type"`
-	Scope        string `json:"scope"`
-	ExpiresAt    string `json:"expires_at,omitempty"`
-	SelectedRepo string `json:"selected_repo,omitempty"`
+	AccessToken           string `json:"access_token"`
+	TokenType             string `json:"token_type"`
+	Scope                 string `json:"scope"`
+	ExpiresAt             string `json:"expires_at,omitempty"`
+	RefreshToken          string `json:"refresh_token,omitempty"`
+	RefreshTokenExpiresAt string `json:"refresh_token_expires_at,omitempty"`
+	SelectedRepo          string `json:"selected_repo,omitempty"`
 }
 
 func (a *App) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -93,12 +97,17 @@ func (a *App) handleCallback(w http.ResponseWriter, r *http.Request) {
 
 	scope, _ := tok.Extra("scope").(string)
 	session := Session{
-		AccessToken: tok.AccessToken,
-		TokenType:   tok.TokenType,
-		Scope:       scope,
+		AccessToken:  tok.AccessToken,
+		TokenType:    tok.TokenType,
+		Scope:        scope,
+		RefreshToken: tok.RefreshToken,
 	}
 	if !tok.Expiry.IsZero() {
 		session.ExpiresAt = tok.Expiry.Format(time.RFC3339)
+	}
+	if refreshExpiresIn, ok := tok.Extra("refresh_token_expires_in").(float64); ok && refreshExpiresIn > 0 {
+		refreshExpiry := time.Now().Add(time.Duration(refreshExpiresIn) * time.Second)
+		session.RefreshTokenExpiresAt = refreshExpiry.Format(time.RFC3339)
 	}
 
 	encoded, err := a.cookies.Encode(a.cookieName, session)
@@ -220,5 +229,107 @@ func (a *App) readSession(r *http.Request) (Session, error) {
 	if session.AccessToken == "" {
 		return Session{}, errors.New("missing access token")
 	}
+	return session, nil
+}
+
+func (a *App) handleRefresh(w http.ResponseWriter, r *http.Request) {
+	session, err := a.readSession(r)
+	if err != nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if session.RefreshToken == "" {
+		http.Error(w, "no refresh token available", http.StatusBadRequest)
+		return
+	}
+
+	newSession, err := a.refreshToken(r.Context(), session.RefreshToken)
+	if err != nil {
+		http.Error(w, "failed to refresh token: "+err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	// Preserve selected repo from old session
+	newSession.SelectedRepo = session.SelectedRepo
+
+	encoded, err := a.cookies.Encode(a.cookieName, newSession)
+	if err != nil {
+		http.Error(w, "failed to encode session", http.StatusInternalServerError)
+		return
+	}
+
+	cookie := &http.Cookie{
+		Name:     a.cookieName,
+		Value:    encoded,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   config.IsSecureURL(a.baseURLForRequest(r)),
+	}
+	http.SetCookie(w, cookie)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(newSession)
+}
+
+func (a *App) refreshToken(ctx context.Context, refreshToken string) (Session, error) {
+	data := url.Values{}
+	data.Set("client_id", a.oauth.ClientID)
+	data.Set("client_secret", a.oauth.ClientSecret)
+	data.Set("grant_type", "refresh_token")
+	data.Set("refresh_token", refreshToken)
+
+	tokenURL := a.tokenURL
+	if tokenURL == "" {
+		tokenURL = "https://github.com/login/oauth/access_token"
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", tokenURL, strings.NewReader(data.Encode()))
+	if err != nil {
+		return Session{}, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return Session{}, err
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		AccessToken           string `json:"access_token"`
+		TokenType             string `json:"token_type"`
+		Scope                 string `json:"scope"`
+		ExpiresIn             int    `json:"expires_in"`
+		RefreshToken          string `json:"refresh_token"`
+		RefreshTokenExpiresIn int    `json:"refresh_token_expires_in"`
+		Error                 string `json:"error"`
+		ErrorDescription      string `json:"error_description"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return Session{}, err
+	}
+
+	if result.Error != "" {
+		return Session{}, errors.New(result.ErrorDescription)
+	}
+
+	session := Session{
+		AccessToken:  result.AccessToken,
+		TokenType:    result.TokenType,
+		Scope:        result.Scope,
+		RefreshToken: result.RefreshToken,
+	}
+
+	if result.ExpiresIn > 0 {
+		session.ExpiresAt = time.Now().Add(time.Duration(result.ExpiresIn) * time.Second).Format(time.RFC3339)
+	}
+	if result.RefreshTokenExpiresIn > 0 {
+		session.RefreshTokenExpiresAt = time.Now().Add(time.Duration(result.RefreshTokenExpiresIn) * time.Second).Format(time.RFC3339)
+	}
+
 	return session, nil
 }

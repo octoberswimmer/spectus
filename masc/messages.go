@@ -239,10 +239,11 @@ type OpenDetailFromTodo struct {
 
 type Logout struct{}
 
-type SessionCheckTick struct{}
+type RefreshSession struct{}
 
-type SessionCheckResult struct {
-	Unauthorized bool
+type SessionRefreshed struct {
+	Session Session
+	Error   string
 }
 
 type SSEReload struct {

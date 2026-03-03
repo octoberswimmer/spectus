@@ -10,11 +10,13 @@ type ClientConfig struct {
 }
 
 type Session struct {
-	AccessToken  string `json:"access_token"`
-	TokenType    string `json:"token_type"`
-	Scope        string `json:"scope"`
-	ExpiresAt    string `json:"expires_at,omitempty"`
-	SelectedRepo string `json:"selected_repo,omitempty"`
+	AccessToken           string `json:"access_token"`
+	TokenType             string `json:"token_type"`
+	Scope                 string `json:"scope"`
+	ExpiresAt             string `json:"expires_at,omitempty"`
+	RefreshToken          string `json:"refresh_token,omitempty"`
+	RefreshTokenExpiresAt string `json:"refresh_token_expires_at,omitempty"`
+	SelectedRepo          string `json:"selected_repo,omitempty"`
 }
 
 type User struct {
