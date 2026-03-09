@@ -496,7 +496,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		if text == "" {
 			return p, nil
 		}
-		p.form.Subtasks = append(p.form.Subtasks, Subtask{Text: text, DueDate: normalizeDueDate(msg.DueDate)})
+		p.form.Subtasks = append(p.form.Subtasks, Subtask{ID: generateSubtaskID(), Text: text, DueDate: normalizeDueDate(msg.DueDate)})
 		p.newSubtaskText = ""
 		p.newSubtaskDue = ""
 		return p, nil
@@ -526,7 +526,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 			return p, nil
 		}
 		p.updateTaskSubtasks(msg.TaskID, func(task *Task) {
-			task.Subtasks = append(task.Subtasks, Subtask{Text: text, DueDate: normalizeDueDate(msg.DueDate)})
+			task.Subtasks = append(task.Subtasks, Subtask{ID: generateSubtaskID(), Text: text, DueDate: normalizeDueDate(msg.DueDate)})
 		})
 		p.detailSubtaskText = ""
 		p.detailSubtaskDue = ""
@@ -1726,8 +1726,10 @@ func renderDetailSubtasks(taskID string, subtasks []Subtask, send func(masc.Msg)
 	items := make([]masc.ComponentOrHTML, 0, len(subtasks))
 	for idx, st := range subtasks {
 		index := idx
+		subtaskKey := st.ID
 		items = append(items, elem.ListItem(
 			masc.Markup(
+				masc.ElementKey(subtaskKey),
 				masc.Style("padding", "0.5rem"),
 				masc.Style("margin-bottom", "0.25rem"),
 				masc.Style("background", "var(--bg)"),
@@ -1855,8 +1857,10 @@ func (p *Program) renderEditModal(send func(masc.Msg)) masc.ComponentOrHTML {
 	subtaskItems := make([]masc.ComponentOrHTML, 0, len(form.Subtasks))
 	for idx, st := range form.Subtasks {
 		index := idx
+		subtaskKey := st.ID
 		subtaskItems = append(subtaskItems, elem.ListItem(
 			masc.Markup(
+				masc.ElementKey(subtaskKey),
 				masc.Style("width", "100%"),
 				masc.Style("box-sizing", "border-box"),
 				masc.Style("padding", "0.5rem"),
@@ -2839,7 +2843,7 @@ func (p *Program) renderNotification() masc.ComponentOrHTML {
 func (p *Program) handleSaveTask() (masc.Model, masc.Cmd) {
 	// Add pending subtask if the new subtask input is populated
 	if text := strings.TrimSpace(p.newSubtaskText); text != "" {
-		p.form.Subtasks = append(p.form.Subtasks, Subtask{Text: text, DueDate: normalizeDueDate(p.newSubtaskDue)})
+		p.form.Subtasks = append(p.form.Subtasks, Subtask{ID: generateSubtaskID(), Text: text, DueDate: normalizeDueDate(p.newSubtaskDue)})
 		p.newSubtaskText = ""
 		p.newSubtaskDue = ""
 	}
@@ -2979,6 +2983,7 @@ func cloneSubtasks(subtasks []Subtask) []Subtask {
 	cloned := make([]Subtask, len(subtasks))
 	for i, s := range subtasks {
 		cloned[i] = Subtask{
+			ID:        generateSubtaskID(),
 			Completed: false,
 			Text:      s.Text,
 			DueDate:   s.DueDate,
@@ -3555,14 +3560,20 @@ func parseTask(id, title, content, status string) Task {
 	}
 	task.Description = strings.TrimRight(strings.Join(descLines, "\n"), " \n")
 
-	for _, match := range regexp.MustCompile(`(?m)^- \[(x| )\] (.+?)(?: \(due (\d{4}-\d{2}-\d{2})\))?\s*$`).FindAllStringSubmatch(content, -1) {
+	for _, match := range regexp.MustCompile(`(?m)^- \[(x| )\] (.+?)(?: \(due (\d{4}-\d{2}-\d{2})\))?(?: \[(ST-[A-Z0-9]+)\])?\s*$`).FindAllStringSubmatch(content, -1) {
 		completed := match[1] == "x"
 		text := strings.TrimSpace(match[2])
 		due := ""
 		if len(match) > 3 {
 			due = normalizeDueDate(match[3])
 		}
-		task.Subtasks = append(task.Subtasks, Subtask{Completed: completed, Text: text, DueDate: due})
+		id := ""
+		if len(match) > 4 && match[4] != "" {
+			id = match[4]
+		} else {
+			id = generateSubtaskID()
+		}
+		task.Subtasks = append(task.Subtasks, Subtask{ID: id, Completed: completed, Text: text, DueDate: due})
 	}
 
 	if idx := strings.Index(content, "**Notes**:"); idx >= 0 {
@@ -3691,7 +3702,7 @@ func (p *Program) generateKanbanMarkdown() string {
 					if st.Completed {
 						check = "x"
 					}
-					sb.WriteString(fmt.Sprintf("- [%s] %s%s\n", check, st.Text, due))
+					sb.WriteString(fmt.Sprintf("- [%s] %s%s [%s]\n", check, st.Text, due, st.ID))
 				}
 			}
 			if task.Notes != "" {
@@ -3760,7 +3771,7 @@ func (p *Program) generateArchiveMarkdown() string {
 				if st.Completed {
 					check = "x"
 				}
-				sb.WriteString(fmt.Sprintf("- [%s] %s%s\n", check, st.Text, due))
+				sb.WriteString(fmt.Sprintf("- [%s] %s%s [%s]\n", check, st.Text, due, st.ID))
 			}
 		}
 		if task.Notes != "" {
@@ -3812,6 +3823,15 @@ func generateTaskID() string {
 		randPart = "0" + randPart
 	}
 	return "TASK-" + ts + randPart
+}
+
+func generateSubtaskID() string {
+	ts := strings.ToUpper(strconvBase36(time.Now().UnixMilli()))
+	randPart := strings.ToUpper(strconvBase36(int64(idRand.Intn(1296))))
+	if len(randPart) == 1 {
+		randPart = "0" + randPart
+	}
+	return "ST-" + ts + randPart
 }
 
 func strconvBase36(value int64) string {

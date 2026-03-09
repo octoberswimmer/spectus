@@ -180,7 +180,7 @@ func TestTasksEqual(t *testing.T) {
 		Description: "Description",
 		Notes:       "Notes",
 		Subtasks: []Subtask{
-			{Completed: false, Text: "Subtask 1", DueDate: ""},
+			{ID: "ST-001", Completed: false, Text: "Subtask 1", DueDate: ""},
 		},
 	}
 
@@ -249,7 +249,7 @@ func TestTasksEqual(t *testing.T) {
 
 	t.Run("different_subtasks", func(t *testing.T) {
 		other := baseTask
-		other.Subtasks = []Subtask{{Completed: true, Text: "Subtask 1"}}
+		other.Subtasks = []Subtask{{ID: "ST-001", Completed: true, Text: "Subtask 1"}}
 		if TasksEqual(baseTask, other) {
 			t.Error("tasks with different subtasks should not be equal")
 		}
@@ -277,34 +277,50 @@ func TestSubtasksEqual(t *testing.T) {
 	})
 
 	t.Run("different_lengths_not_equal", func(t *testing.T) {
-		a := []Subtask{{Text: "one"}}
-		b := []Subtask{{Text: "one"}, {Text: "two"}}
+		a := []Subtask{{ID: "ST-001", Text: "one"}}
+		b := []Subtask{{ID: "ST-001", Text: "one"}, {ID: "ST-002", Text: "two"}}
 		if SubtasksEqual(a, b) {
 			t.Error("slices with different lengths should not be equal")
 		}
 	})
 
+	t.Run("different_id_not_equal", func(t *testing.T) {
+		a := []Subtask{{ID: "ST-001", Completed: false, Text: "task"}}
+		b := []Subtask{{ID: "ST-002", Completed: false, Text: "task"}}
+		if SubtasksEqual(a, b) {
+			t.Error("subtasks with different IDs should not be equal")
+		}
+	})
+
 	t.Run("different_completed_not_equal", func(t *testing.T) {
-		a := []Subtask{{Completed: false, Text: "task"}}
-		b := []Subtask{{Completed: true, Text: "task"}}
+		a := []Subtask{{ID: "ST-001", Completed: false, Text: "task"}}
+		b := []Subtask{{ID: "ST-001", Completed: true, Text: "task"}}
 		if SubtasksEqual(a, b) {
 			t.Error("subtasks with different completed status should not be equal")
 		}
 	})
 
 	t.Run("different_text_not_equal", func(t *testing.T) {
-		a := []Subtask{{Text: "task 1"}}
-		b := []Subtask{{Text: "task 2"}}
+		a := []Subtask{{ID: "ST-001", Text: "task 1"}}
+		b := []Subtask{{ID: "ST-001", Text: "task 2"}}
 		if SubtasksEqual(a, b) {
 			t.Error("subtasks with different text should not be equal")
 		}
 	})
 
 	t.Run("different_due_date_not_equal", func(t *testing.T) {
-		a := []Subtask{{Text: "task", DueDate: "2024-01-01"}}
-		b := []Subtask{{Text: "task", DueDate: "2024-01-02"}}
+		a := []Subtask{{ID: "ST-001", Text: "task", DueDate: "2024-01-01"}}
+		b := []Subtask{{ID: "ST-001", Text: "task", DueDate: "2024-01-02"}}
 		if SubtasksEqual(a, b) {
 			t.Error("subtasks with different due dates should not be equal")
+		}
+	})
+
+	t.Run("identical_subtasks_are_equal", func(t *testing.T) {
+		a := []Subtask{{ID: "ST-001", Completed: true, Text: "task", DueDate: "2024-01-01"}}
+		b := []Subtask{{ID: "ST-001", Completed: true, Text: "task", DueDate: "2024-01-01"}}
+		if !SubtasksEqual(a, b) {
+			t.Error("identical subtasks should be equal")
 		}
 	})
 }
@@ -344,7 +360,7 @@ func TestMergeTask(t *testing.T) {
 		Created:     "2024-01-01T00:00:00Z",
 		Modified:    "2024-01-01T00:00:00Z",
 		Description: "Original description",
-		Subtasks:    []Subtask{{Text: "Original subtask"}},
+		Subtasks:    []Subtask{{ID: "ST-001", Text: "Original subtask"}},
 		Notes:       "Original notes",
 	}
 
@@ -425,7 +441,7 @@ func TestMergeTask(t *testing.T) {
 
 	t.Run("local_subtask_change_preserved", func(t *testing.T) {
 		local := baseTask
-		local.Subtasks = []Subtask{{Text: "New subtask", Completed: true}}
+		local.Subtasks = []Subtask{{ID: "ST-002", Text: "New subtask", Completed: true}}
 		result := MergeTask(baseTask, local, baseTask)
 		if len(result.Subtasks) != 1 || result.Subtasks[0].Text != "New subtask" {
 			t.Error("expected local subtasks to be preserved")
@@ -434,7 +450,7 @@ func TestMergeTask(t *testing.T) {
 
 	t.Run("remote_subtask_change_when_local_unchanged", func(t *testing.T) {
 		remote := baseTask
-		remote.Subtasks = []Subtask{{Text: "Remote subtask"}}
+		remote.Subtasks = []Subtask{{ID: "ST-002", Text: "Remote subtask"}}
 		result := MergeTask(baseTask, baseTask, remote)
 		if len(result.Subtasks) != 1 || result.Subtasks[0].Text != "Remote subtask" {
 			t.Error("expected remote subtasks when local unchanged")
@@ -833,20 +849,20 @@ func TestConflictResolutionScenarios(t *testing.T) {
 			ID:       "TASK-001",
 			Title:    "Task with subtasks",
 			Status:   "todo",
-			Subtasks: []Subtask{{Text: "Subtask 1", Completed: false}},
+			Subtasks: []Subtask{{ID: "ST-001", Text: "Subtask 1", Completed: false}},
 		}
 		base := []Task{taskWithSubtasks}
 
 		// Local: complete the subtask
 		localTask := taskWithSubtasks
-		localTask.Subtasks = []Subtask{{Text: "Subtask 1", Completed: true}}
+		localTask.Subtasks = []Subtask{{ID: "ST-001", Text: "Subtask 1", Completed: true}}
 		local := []Task{localTask}
 
 		// Remote: add a new subtask (subtasks changed, so different)
 		remoteTask := taskWithSubtasks
 		remoteTask.Subtasks = []Subtask{
-			{Text: "Subtask 1", Completed: false},
-			{Text: "Subtask 2", Completed: false},
+			{ID: "ST-001", Text: "Subtask 1", Completed: false},
+			{ID: "ST-002", Text: "Subtask 2", Completed: false},
 		}
 		remote := []Task{remoteTask}
 
@@ -1107,16 +1123,16 @@ func TestSessionRestoreScenarios(t *testing.T) {
 			Title:  "Task",
 			Status: "todo",
 			Subtasks: []Subtask{
-				{Text: "Subtask 1", Completed: false},
-				{Text: "Subtask 2", Completed: false},
+				{ID: "ST-001", Text: "Subtask 1", Completed: false},
+				{ID: "ST-002", Text: "Subtask 2", Completed: false},
 			},
 		}
 		base := []Task{baseTask}
 
 		localTask := baseTask
 		localTask.Subtasks = []Subtask{
-			{Text: "Subtask 1", Completed: true}, // Completed this one
-			{Text: "Subtask 2", Completed: false},
+			{ID: "ST-001", Text: "Subtask 1", Completed: true}, // Completed this one
+			{ID: "ST-002", Text: "Subtask 2", Completed: false},
 		}
 		local := []Task{localTask}
 
@@ -1199,7 +1215,7 @@ func TestMergeTaskAllProperties(t *testing.T) {
 		Modified:    "2026-01-01T00:00:00Z",
 		Completed:   "",
 		Description: "Base description",
-		Subtasks:    []Subtask{{Text: "Base subtask", Completed: false}},
+		Subtasks:    []Subtask{{ID: "ST-001", Text: "Base subtask", Completed: false}},
 		Notes:       "Base notes",
 	}
 
@@ -1214,9 +1230,9 @@ func TestMergeTaskAllProperties(t *testing.T) {
 		Created:     "2026-01-01T00:00:00Z",
 		Modified:    "2026-01-02T00:00:00Z",
 		Completed:   "",
-		Description: "Base description",                                  // unchanged
-		Subtasks:    []Subtask{{Text: "Base subtask", Completed: false}}, // unchanged
-		Notes:       "Local notes",                                       // changed
+		Description: "Base description",                                                // unchanged
+		Subtasks:    []Subtask{{ID: "ST-001", Text: "Base subtask", Completed: false}}, // unchanged
+		Notes:       "Local notes",                                                     // changed
 	}
 
 	// Remote changes other properties
@@ -1230,9 +1246,9 @@ func TestMergeTaskAllProperties(t *testing.T) {
 		Created:     "2026-01-01T00:00:00Z",
 		Modified:    "2026-01-03T00:00:00Z",
 		Completed:   "",
-		Description: "Remote description",                                // changed
-		Subtasks:    []Subtask{{Text: "Base subtask", Completed: false}}, // unchanged
-		Notes:       "Base notes",                                        // unchanged
+		Description: "Remote description",                                              // changed
+		Subtasks:    []Subtask{{ID: "ST-001", Text: "Base subtask", Completed: false}}, // unchanged
+		Notes:       "Base notes",                                                      // unchanged
 	}
 
 	result := MergeTask(base, local, remote)

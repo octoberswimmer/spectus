@@ -81,6 +81,7 @@ func toMergeSubtasks(subtasks []Subtask) []merge.Subtask {
 	result := make([]merge.Subtask, len(subtasks))
 	for i, s := range subtasks {
 		result[i] = merge.Subtask{
+			ID:        s.ID,
 			Completed: s.Completed,
 			Text:      s.Text,
 			DueDate:   s.DueDate,
@@ -93,6 +94,7 @@ func fromMergeSubtasks(subtasks []merge.Subtask) []Subtask {
 	result := make([]Subtask, len(subtasks))
 	for i, s := range subtasks {
 		result[i] = Subtask{
+			ID:        s.ID,
 			Completed: s.Completed,
 			Text:      s.Text,
 			DueDate:   s.DueDate,

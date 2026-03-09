@@ -72,6 +72,7 @@ func (t Task) GetID() string {
 }
 
 type Subtask struct {
+	ID        string
 	Completed bool
 	Text      string
 	DueDate   string

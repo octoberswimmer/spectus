@@ -18,6 +18,7 @@ type Task struct {
 }
 
 type Subtask struct {
+	ID        string
 	Completed bool
 	Text      string
 	DueDate   string
@@ -178,7 +179,8 @@ func SubtasksEqual(a, b []Subtask) bool {
 		return false
 	}
 	for i := range a {
-		if a[i].Completed != b[i].Completed ||
+		if a[i].ID != b[i].ID ||
+			a[i].Completed != b[i].Completed ||
 			a[i].Text != b[i].Text ||
 			a[i].DueDate != b[i].DueDate {
 			return false
