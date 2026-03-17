@@ -104,6 +104,9 @@ type Program struct {
 	detailSubtaskDue  string
 
 	dragDrop DragDropState
+
+	// Render-time cache to avoid recomputing expensive operations
+	cachedHasPendingChanges bool
 }
 
 func NewProgram(cfg ClientConfig) *Program {
@@ -217,6 +220,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 				statusMsg = "Session restored. Remote changes merged with your uncommitted changes."
 			}
 			statusCmd := p.setStatus(statusMsg, true)
+			p.updatePendingChangesCache()
 			return p, batchCmds(statusCmd, p.sseListenCmd())
 		}
 
@@ -238,6 +242,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		p.archived = parseArchive(archiveContent)
 		p.lastSavedArchive = msg.ArchiveContent
 
+		p.updatePendingChangesCache()
 		return p, batchCmds(statusCmd, p.sseListenCmd())
 	case CommitChanges:
 		if !p.repoLoaded || p.commitInProgress || !p.hasPendingCommitChanges() {
@@ -279,6 +284,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		if msg.OID != "" {
 			p.headOID = msg.OID
 		}
+		p.updatePendingChangesCache()
 		if msg.URL != "" {
 			return p, p.setStatus("Committed: "+msg.URL, true)
 		} else {
@@ -330,6 +336,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 			p.retryBaseArchive = ""
 			p.pendingCommitKanban = mergedKanbanContent
 			p.pendingCommitArchive = mergedArchiveContent
+			p.updatePendingChangesCache()
 			return p, batchCmds(statusCmd, p.commitCmd(message, files))
 		}
 		return p, nil
@@ -530,6 +537,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		})
 		p.detailSubtaskText = ""
 		p.detailSubtaskDue = ""
+		p.updatePendingChangesCache()
 		return p, nil
 	case ToggleTaskSubtask:
 		p.updateTaskSubtasks(msg.TaskID, func(task *Task) {
@@ -537,6 +545,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 				task.Subtasks[msg.Index].Completed = !task.Subtasks[msg.Index].Completed
 			}
 		})
+		p.updatePendingChangesCache()
 		return p, nil
 	case UpdateTaskSubtaskText:
 		p.updateTaskSubtasks(msg.TaskID, func(task *Task) {
@@ -544,6 +553,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 				task.Subtasks[msg.Index].Text = msg.Value
 			}
 		})
+		p.updatePendingChangesCache()
 		return p, nil
 	case UpdateTaskSubtaskDueDate:
 		p.updateTaskSubtasks(msg.TaskID, func(task *Task) {
@@ -551,6 +561,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 				task.Subtasks[msg.Index].DueDate = normalizeDueDate(msg.Value)
 			}
 		})
+		p.updatePendingChangesCache()
 		return p, nil
 	case DeleteTaskSubtask:
 		p.updateTaskSubtasks(msg.TaskID, func(task *Task) {
@@ -558,34 +569,43 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 				task.Subtasks = append(task.Subtasks[:msg.Index], task.Subtasks[msg.Index+1:]...)
 			}
 		})
+		p.updatePendingChangesCache()
 		return p, nil
 	case SaveTask:
 		return p.handleSaveTask()
 	case DeleteTask:
 		p.deleteTaskByID(msg.TaskID)
+		p.updatePendingChangesCache()
 		return p, p.setStatus("Task deleted.", true)
 	case ArchiveTask:
 		p.archiveTask(msg.TaskID)
+		p.updatePendingChangesCache()
 		return p, p.setStatus("Task archived.", true)
 	case RestoreTask:
 		p.restoreTask(msg.TaskID)
+		p.updatePendingChangesCache()
 		return p, p.setStatus("Task restored.", true)
 	case MoveTaskPosition:
 		p.moveTaskWithinColumn(msg.TaskID, msg.Direction)
+		p.updatePendingChangesCache()
 		return p, nil
 	case CloneTask:
 		return p.cloneTask(msg.TaskID)
 	case AddColumn:
 		p.addColumn()
+		p.updatePendingChangesCache()
 		return p, nil
 	case UpdateColumn:
 		p.updateColumn(msg.Index, msg.Field, msg.Value)
+		p.updatePendingChangesCache()
 		return p, nil
 	case DeleteColumn:
 		p.deleteColumn(msg.Index)
+		p.updatePendingChangesCache()
 		return p, nil
 	case MoveColumn:
 		p.moveColumn(msg.Index, msg.Direction)
+		p.updatePendingChangesCache()
 		return p, nil
 	case UpdateArchiveSearch:
 		p.archiveSearch = msg.Value
@@ -615,10 +635,12 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 	case DropOnTask:
 		p.handleDropOnTask(msg.TargetTaskID, msg.ColumnID)
 		p.dragDrop.Reset()
+		p.updatePendingChangesCache()
 		return p, nil
 	case DropOnColumn:
 		p.handleDropOnColumn(msg.ColumnID)
 		p.dragDrop.Reset()
+		p.updatePendingChangesCache()
 		return p, nil
 	case Logout:
 		return p, logoutCmd()
@@ -650,7 +672,7 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 }
 
 func (p *Program) Render(send func(masc.Msg)) masc.ComponentOrHTML {
-	js.Global().Set("hasDirtyChanges", p.repoLoaded && p.hasPendingCommitChanges())
+	js.Global().Set("hasDirtyChanges", p.cachedHasPendingChanges)
 
 	if !p.loggedIn {
 		return p.renderLogin(send)
@@ -1062,7 +1084,7 @@ func (p *Program) renderHeader(send func(masc.Msg)) masc.ComponentOrHTML {
 					elem.Button(
 						masc.Markup(
 							masc.Class("btn", "btn-primary"),
-							masc.Property("disabled", !p.hasPendingCommitChanges() || p.commitInProgress),
+							masc.Property("disabled", !p.cachedHasPendingChanges || p.commitInProgress),
 							event.Click(func(e *masc.Event) { send(CommitChanges{}) }),
 						),
 						masc.Text("💾 Commit"),
@@ -2321,7 +2343,7 @@ func (p *Program) renderCommitModal(send func(masc.Msg)) masc.ComponentOrHTML {
 	if strings.TrimSpace(diffText) == "" {
 		diffText = "No changes to commit."
 	}
-	hasChanges := p.hasPendingCommitChanges()
+	hasChanges := p.cachedHasPendingChanges
 	missingBlankLine := commitMessageMissingBlankLine(p.commitMessageDraft)
 
 	return elem.Div(
@@ -2530,6 +2552,10 @@ func commitMessageMissingBlankLine(message string) bool {
 
 func (p *Program) hasPendingCommitChanges() bool {
 	return p.lastSavedKanban != p.generateKanbanMarkdown() || p.lastSavedArchive != p.generateArchiveMarkdown()
+}
+
+func (p *Program) updatePendingChangesCache() {
+	p.cachedHasPendingChanges = p.repoLoaded && p.hasPendingCommitChanges()
 }
 
 type localStorageAdapter struct{}
@@ -2885,6 +2911,7 @@ func (p *Program) handleSaveTask() (masc.Model, masc.Cmd) {
 		statusCmd := p.setStatus("Task updated.", true)
 		p.modal = ModalNone
 		p.form = TaskForm{}
+		p.updatePendingChangesCache()
 		return p, statusCmd
 	} else {
 		newTask := Task{
@@ -2905,6 +2932,7 @@ func (p *Program) handleSaveTask() (masc.Model, masc.Cmd) {
 		statusCmd := p.setStatus("Task created.", true)
 		p.modal = ModalNone
 		p.form = TaskForm{}
+		p.updatePendingChangesCache()
 		return p, statusCmd
 	}
 }
@@ -2976,6 +3004,7 @@ func (p *Program) cloneTask(taskID string) (*Program, masc.Cmd) {
 	p.newSubtaskText = ""
 	p.newSubtaskDue = ""
 	p.tagSuggestionsOpen = false
+	p.updatePendingChangesCache()
 	return p, p.setStatus("Task cloned.", true)
 }
 
