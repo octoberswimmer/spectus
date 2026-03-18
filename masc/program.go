@@ -21,6 +21,7 @@ import (
 )
 
 var idRand = rand.New(rand.NewSource(time.Now().UnixNano()))
+var idCounter int64
 
 // retryAction indicates what operation to retry after token refresh
 type retryAction string
@@ -3856,11 +3857,16 @@ func generateTaskID() string {
 
 func generateSubtaskID() string {
 	ts := strings.ToUpper(strconvBase36(time.Now().UnixMilli()))
+	idCounter++
+	counterPart := strings.ToUpper(strconvBase36(idCounter % 1296))
 	randPart := strings.ToUpper(strconvBase36(int64(idRand.Intn(1296))))
+	if len(counterPart) == 1 {
+		counterPart = "0" + counterPart
+	}
 	if len(randPart) == 1 {
 		randPart = "0" + randPart
 	}
-	return "ST-" + ts + randPart
+	return "ST-" + ts + counterPart + randPart
 }
 
 func strconvBase36(value int64) string {
