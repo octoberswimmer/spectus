@@ -1941,6 +1941,7 @@ func (p *Program) renderEditModal(send func(masc.Msg)) masc.ComponentOrHTML {
 			)),
 			elem.Button(
 				masc.Markup(
+					masc.Property("type", "button"),
 					masc.Style("background", "none"),
 					masc.Style("border", "none"),
 					masc.Style("flex", "0 0 auto"),
