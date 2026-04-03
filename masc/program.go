@@ -23,16 +23,6 @@ import (
 var idRand = rand.New(rand.NewSource(time.Now().UnixNano()))
 var idCounter int64
 
-// retryAction indicates what operation to retry after token refresh
-type retryAction string
-
-const (
-	retryNone       retryAction = ""
-	retryFetchRepos retryAction = "fetch_repos"
-	retryLoadRepo   retryAction = "load_repo"
-	retryCommit     retryAction = "commit"
-)
-
 type TaskForm struct {
 	ID          string
 	Title       string
@@ -131,6 +121,14 @@ func (p *Program) Update(msg masc.Msg) (masc.Model, masc.Cmd) {
 		p.error = ""
 		statusCmd := p.setStatus("Loading repositories…", false)
 		return p, batchCmds(statusCmd, p.fetchReposCmd())
+	case ViewerLoadError:
+		if msg.Unauthorized {
+			// Use retryNone so handleSessionRefreshed defaults to fetchViewerCmd
+			return p.handleUnauthorized(retryNone)
+		}
+		p.loading = false
+		p.error = msg.Error
+		return p, nil
 	case ReposLoaded:
 		if msg.Unauthorized {
 			return p.handleUnauthorized(retryFetchRepos)
@@ -836,7 +834,7 @@ func (p *Program) fetchViewerCmd() masc.Cmd {
 		client := &GraphQLClient{Token: token}
 		viewer, err := fetchViewer(client)
 		if err != nil {
-			return LoadError{Error: err.Error(), Unauthorized: isUnauthorized(err)}
+			return ViewerLoadError{Error: err.Error(), Unauthorized: isUnauthorized(err)}
 		}
 		return ViewerLoaded{Viewer: viewer}
 	}

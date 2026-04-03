@@ -44,7 +44,7 @@ func (c *restClient) Get(path string, out interface{}) error {
 		if status == 401 {
 			return newUnauthorizedError(message)
 		}
-		return fmt.Errorf(message)
+		return fmt.Errorf("%s", message)
 	}
 	if out == nil {
 		return nil

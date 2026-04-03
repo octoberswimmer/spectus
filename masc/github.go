@@ -65,7 +65,7 @@ func (c *GraphQLClient) Query(query string, variables map[string]interface{}, ou
 		if status == 401 {
 			return newUnauthorizedError(message)
 		}
-		return fmt.Errorf(message)
+		return fmt.Errorf("%s", message)
 	}
 
 	var envelope graphQLResponse
@@ -122,7 +122,7 @@ func (c *GraphQLClient) REST(method, url string, payload map[string]interface{})
 		if status == 401 {
 			return nil, newUnauthorizedError(message)
 		}
-		return nil, fmt.Errorf(message)
+		return nil, fmt.Errorf("%s", message)
 	}
 
 	var result map[string]interface{}
