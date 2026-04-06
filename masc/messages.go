@@ -7,6 +7,34 @@ type SetSession struct {
 	Session string
 }
 
+// ViewerLoaded is returned after fetching the viewer
+type ViewerLoaded struct {
+	Viewer User
+}
+
+// ViewerLoadError is returned when fetching the viewer fails
+type ViewerLoadError struct {
+	Error        string
+	Unauthorized bool
+}
+
+// LoadError is returned when loading a repo fails
+type LoadError struct {
+	Error        string
+	Unauthorized bool
+}
+
+// RepoLoaded is returned after loading a repo's content
+type RepoLoaded struct {
+	Repo           RepoSelection
+	Branch         string
+	HeadOID        string
+	KanbanContent  string
+	ArchiveContent string
+	MissingKanban  bool
+	MissingArchive bool
+}
+
 // LoadRepo triggers a manual repo reload
 type LoadRepo struct{}
 
@@ -28,6 +56,13 @@ type HeadRefreshed struct {
 	KanbanContent  string
 	ArchiveContent string
 	Error          string
+}
+
+// ReposLoaded is returned after fetching the list of repos
+type ReposLoaded struct {
+	Repos        []RepoOption
+	Error        string
+	Unauthorized bool
 }
 
 // SelectRepo changes the selected repository
@@ -266,6 +301,12 @@ type Logout struct{}
 
 // RefreshSession triggers a session refresh
 type RefreshSession struct{}
+
+// SessionRefreshed is returned after a token refresh attempt
+type SessionRefreshed struct {
+	Session Session
+	Error   string
+}
 
 // SSEReload is sent when SSE indicates a reload is needed
 type SSEReload struct {

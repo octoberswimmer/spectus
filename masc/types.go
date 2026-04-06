@@ -2,6 +2,49 @@
 
 package main
 
+// ClientConfig holds client-side configuration
+type ClientConfig struct {
+	DefaultRepo   string `json:"default_repo"`
+	KanbanPath    string `json:"kanban_path"`
+	ArchivePath   string `json:"archive_path"`
+	AppInstallURL string `json:"app_install_url"`
+}
+
+// Session holds OAuth session data
+type Session struct {
+	AccessToken           string `json:"access_token"`
+	TokenType             string `json:"token_type"`
+	Scope                 string `json:"scope"`
+	ExpiresAt             string `json:"expires_at,omitempty"`
+	RefreshToken          string `json:"refresh_token,omitempty"`
+	RefreshTokenExpiresAt string `json:"refresh_token_expires_at,omitempty"`
+	SelectedRepo          string `json:"selected_repo,omitempty"`
+}
+
+// User represents a GitHub user
+type User struct {
+	ID        string `json:"id"`
+	Login     string `json:"login"`
+	AvatarURL string `json:"avatar_url,omitempty"`
+}
+
+// RepoSelection represents the currently selected repository
+type RepoSelection struct {
+	Owner       string
+	Name        string
+	Repo        string
+	KanbanPath  string
+	ArchivePath string
+	Branch      string
+}
+
+// RepoOption represents a repository option in the dropdown
+type RepoOption struct {
+	Owner    string
+	Name     string
+	FullName string
+}
+
 // BoardConfig holds the kanban board configuration
 type BoardConfig struct {
 	Columns    []Column
@@ -32,6 +75,7 @@ type Task struct {
 	Notes       string
 }
 
+// GetID returns the task ID
 func (t Task) GetID() string {
 	return t.ID
 }
@@ -49,3 +93,13 @@ type Filter struct {
 	Type  string
 	Value string
 }
+
+// retryAction indicates what operation to retry after token refresh
+type retryAction string
+
+const (
+	retryNone       retryAction = ""
+	retryFetchRepos retryAction = "fetch_repos"
+	retryLoadRepo   retryAction = "load_repo"
+	retryCommit     retryAction = "commit"
+)

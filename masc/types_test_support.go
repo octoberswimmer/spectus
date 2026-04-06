@@ -1,3 +1,5 @@
+//go:build !js
+
 package main
 
 // retryAction indicates what operation to retry after token refresh
@@ -28,33 +30,6 @@ type RepoOption struct {
 	FullName string
 }
 
-// RepoSelection represents the currently selected repository
-type RepoSelection struct {
-	Owner       string
-	Name        string
-	Repo        string
-	KanbanPath  string
-	ArchivePath string
-	Branch      string
-}
-
-// ClientConfig holds client-side configuration
-type ClientConfig struct {
-	AppInstallURL string `json:"app_install_url"`
-	DefaultRepo   string `json:"default_repo"`
-	KanbanPath    string `json:"kanban_path"`
-	ArchivePath   string `json:"archive_path"`
-}
-
-// User represents a GitHub user
-type User struct {
-	ID        string `json:"id"`
-	Login     string `json:"login"`
-	AvatarURL string `json:"avatar_url,omitempty"`
-}
-
-// Core message types for Update handling
-
 // ViewerLoadError is returned when fetching the viewer fails
 type ViewerLoadError struct {
 	Error        string
@@ -71,27 +46,4 @@ type LoadError struct {
 type SessionRefreshed struct {
 	Session Session
 	Error   string
-}
-
-// ReposLoaded is returned after fetching the list of repos
-type ReposLoaded struct {
-	Repos        []RepoOption
-	Error        string
-	Unauthorized bool
-}
-
-// RepoLoaded is returned after loading a repo's content
-type RepoLoaded struct {
-	Repo           RepoSelection
-	Branch         string
-	HeadOID        string
-	KanbanContent  string
-	ArchiveContent string
-	MissingKanban  bool
-	MissingArchive bool
-}
-
-// ViewerLoaded is returned after fetching the viewer
-type ViewerLoaded struct {
-	Viewer User
 }
