@@ -2,6 +2,8 @@ module github.com/octoberswimmer/spectus
 
 go 1.25.6
 
+// +heroku install .
+
 require (
 	github.com/gorilla/securecookie v1.1.2
 	github.com/hexops/gotextdiff v1.0.3
