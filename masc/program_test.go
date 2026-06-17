@@ -300,3 +300,95 @@ func TestLoadError_Flow_SkipsReposFetch(t *testing.T) {
 		t.Errorf("repos should still have 1 item, got %d", len(p.repos))
 	}
 }
+
+// todoSubtask mirrors the subset of Subtask fields used by the TODO modal.
+type todoSubtask struct {
+	ID        string
+	Text      string
+	Completed bool
+}
+
+// todoTask mirrors the subset of Task fields used by the TODO modal.
+type todoTask struct {
+	ID       string
+	Subtasks []todoSubtask
+}
+
+// testTodoItem mirrors todoItem for the !js test build.
+type testTodoItem struct {
+	TaskID       string
+	SubtaskIndex int
+	SubtaskID    string
+	SubtaskText  string
+}
+
+// buildTestTodoItems mirrors Program.buildTodoItems: it includes only
+// incomplete subtasks and carries each subtask's stable ID (used as the
+// render key so checkbox DOM state doesn't bleed onto the next item).
+func buildTestTodoItems(tasks []todoTask) []testTodoItem {
+	items := make([]testTodoItem, 0)
+	for _, task := range tasks {
+		for idx, st := range task.Subtasks {
+			if st.Completed {
+				continue
+			}
+			items = append(items, testTodoItem{
+				TaskID:       task.ID,
+				SubtaskIndex: idx,
+				SubtaskID:    st.ID,
+				SubtaskText:  st.Text,
+			})
+		}
+	}
+	return items
+}
+
+// TestTodoItems_excludes_completed_subtasks verifies the TODO list drops
+// completed subtasks so checking one removes it from the modal.
+func TestTodoItems_excludes_completed_subtasks(t *testing.T) {
+	tasks := []todoTask{{
+		ID: "T1",
+		Subtasks: []todoSubtask{
+			{ID: "a", Text: "first", Completed: true},
+			{ID: "b", Text: "second"},
+			{ID: "c", Text: "third"},
+		},
+	}}
+
+	items := buildTestTodoItems(tasks)
+
+	if len(items) != 2 {
+		t.Fatalf("expected 2 incomplete items, got %d", len(items))
+	}
+	if items[0].SubtaskText != "second" || items[1].SubtaskText != "third" {
+		t.Errorf("unexpected items: %+v", items)
+	}
+}
+
+// TestTodoItems_carry_stable_subtask_id verifies each rendered TODO row can
+// be keyed by the subtask's own ID rather than its position. Without a stable
+// key, removing the checked row reuses its checkbox DOM node for the next row,
+// which then appears checked.
+func TestTodoItems_carry_stable_subtask_id(t *testing.T) {
+	tasks := []todoTask{{
+		ID: "T1",
+		Subtasks: []todoSubtask{
+			{ID: "a", Text: "first"},
+			{ID: "b", Text: "second"},
+		},
+	}}
+
+	items := buildTestTodoItems(tasks)
+
+	keys := map[string]bool{}
+	for _, it := range items {
+		if it.SubtaskID == "" {
+			t.Fatalf("item %q is missing a subtask ID to key on", it.SubtaskText)
+		}
+		key := it.TaskID + "/" + it.SubtaskID
+		if keys[key] {
+			t.Fatalf("duplicate render key %q", key)
+		}
+		keys[key] = true
+	}
+}

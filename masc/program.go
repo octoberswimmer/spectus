@@ -2441,6 +2441,7 @@ type todoItem struct {
 	TaskTitle       string
 	TaskAssignees   []string
 	SubtaskIndex    int
+	SubtaskID       string
 	SubtaskText     string
 	SubtaskDueDate  string
 	SubtaskSortDate string
@@ -2463,7 +2464,7 @@ func (p *Program) renderTodoModal(send func(masc.Msg)) masc.ComponentOrHTML {
 			if itemValue.TaskID != currentTaskID {
 				if len(currentGroup) > 0 {
 					listChildren = append(listChildren, elem.Div(
-						append([]masc.MarkupOrChild{masc.Markup(masc.Class("todo-task-group"))}, toMarkupChildren(currentGroup)...)...,
+						append([]masc.MarkupOrChild{masc.Markup(masc.Class("todo-task-group"), masc.ElementKey(currentTaskID))}, toMarkupChildren(currentGroup)...)...,
 					))
 					currentGroup = nil
 				}
@@ -2492,6 +2493,7 @@ func (p *Program) renderTodoModal(send func(masc.Msg)) masc.ComponentOrHTML {
 			subtaskChildren := []masc.ComponentOrHTML{
 				elem.Input(masc.Markup(
 					masc.Property("type", "checkbox"),
+					masc.Property("checked", false),
 					masc.Style("cursor", "pointer"),
 					event.Change(func(e *masc.Event) { send(ToggleTaskSubtask{TaskID: itemValue.TaskID, Index: itemValue.SubtaskIndex}) }),
 				)),
@@ -2504,12 +2506,15 @@ func (p *Program) renderTodoModal(send func(masc.Msg)) masc.ComponentOrHTML {
 				))
 			}
 			currentGroup = append(currentGroup, elem.Div(
-				append([]masc.MarkupOrChild{masc.Markup(masc.Class("todo-subtask"))}, toMarkupChildren(subtaskChildren)...)...,
+				append([]masc.MarkupOrChild{masc.Markup(
+					masc.Class("todo-subtask"),
+					masc.ElementKey(itemValue.TaskID+"/"+itemValue.SubtaskID),
+				)}, toMarkupChildren(subtaskChildren)...)...,
 			))
 		}
 		if len(currentGroup) > 0 {
 			listChildren = append(listChildren, elem.Div(
-				append([]masc.MarkupOrChild{masc.Markup(masc.Class("todo-task-group"))}, toMarkupChildren(currentGroup)...)...,
+				append([]masc.MarkupOrChild{masc.Markup(masc.Class("todo-task-group"), masc.ElementKey(currentTaskID))}, toMarkupChildren(currentGroup)...)...,
 			))
 		}
 	}
@@ -2615,6 +2620,7 @@ func (p *Program) buildTodoItems() []todoItem {
 				TaskTitle:       task.Title,
 				TaskAssignees:   task.Assignees,
 				SubtaskIndex:    idx,
+				SubtaskID:       st.ID,
 				SubtaskText:     st.Text,
 				SubtaskDueDate:  normalizeDueDate(st.DueDate),
 				SubtaskSortDate: sortDate,
