@@ -2436,17 +2436,6 @@ func diffLineClass(line string) string {
 	}
 }
 
-type todoItem struct {
-	TaskID          string
-	TaskTitle       string
-	TaskAssignees   []string
-	SubtaskIndex    int
-	SubtaskID       string
-	SubtaskText     string
-	SubtaskDueDate  string
-	SubtaskSortDate string
-}
-
 func (p *Program) renderTodoModal(send func(masc.Msg)) masc.ComponentOrHTML {
 	items := p.buildTodoItems()
 	listChildren := make([]masc.ComponentOrHTML, 0, len(items)*2)
@@ -2457,64 +2446,59 @@ func (p *Program) renderTodoModal(send func(masc.Msg)) masc.ComponentOrHTML {
 			masc.Text("No incomplete subtasks"),
 		))
 	} else {
-		currentTaskID := ""
-		var currentGroup []masc.ComponentOrHTML
-		for _, item := range items {
-			itemValue := item
-			if itemValue.TaskID != currentTaskID {
-				if len(currentGroup) > 0 {
-					listChildren = append(listChildren, elem.Div(
-						append([]masc.MarkupOrChild{masc.Markup(masc.Class("todo-task-group"), masc.ElementKey(currentTaskID))}, toMarkupChildren(currentGroup)...)...,
+		// Items are sorted by due date, so subtasks of the same task may not be
+		// contiguous. Group by TaskID in first-seen order so each task produces a
+		// single group element and rendered element keys stay unique.
+		for _, group := range groupTodoItemsByTask(items) {
+			header := group.Items[0]
+			children := make([]masc.ComponentOrHTML, 0, len(group.Items)+1)
+			assigneeText := strings.Join(header.TaskAssignees, ", ")
+			taskHeaderChildren := []masc.ComponentOrHTML{
+				elem.Span(masc.Text(header.TaskTitle)),
+				elem.Span(masc.Markup(masc.Class("todo-task-id")), masc.Text("("+header.TaskID+")")),
+			}
+			if assigneeText != "" {
+				taskHeaderChildren = append(taskHeaderChildren, elem.Span(masc.Markup(masc.Class("todo-task-assignees")), masc.Text(assigneeText)))
+			}
+			children = append(children, elem.Button(
+				append([]masc.MarkupOrChild{
+					masc.Markup(
+						masc.Class("todo-task-header"),
+						masc.Property("type", "button"),
+						event.MouseDown(func(e *masc.Event) {
+							send(OpenDetailFromTodo{TaskID: header.TaskID})
+						}).PreventDefault(),
+					),
+				}, toMarkupChildren(taskHeaderChildren)...)...,
+			))
+
+			for _, item := range group.Items {
+				itemValue := item
+				subtaskChildren := []masc.ComponentOrHTML{
+					elem.Input(masc.Markup(
+						masc.Property("type", "checkbox"),
+						masc.Property("checked", false),
+						masc.Style("cursor", "pointer"),
+						event.Change(func(e *masc.Event) { send(ToggleTaskSubtask{TaskID: itemValue.TaskID, Index: itemValue.SubtaskIndex}) }),
+					)),
+					elem.Span(masc.Markup(masc.Class("todo-subtask-text")), masc.Text(itemValue.SubtaskText)),
+				}
+				if itemValue.SubtaskDueDate != "" {
+					subtaskChildren = append(subtaskChildren, elem.Span(
+						masc.Markup(masc.Class("todo-due")),
+						masc.Text("Due: "+itemValue.SubtaskDueDate),
 					))
-					currentGroup = nil
 				}
-				currentTaskID = itemValue.TaskID
-				assigneeText := strings.Join(itemValue.TaskAssignees, ", ")
-				taskHeaderChildren := []masc.ComponentOrHTML{
-					elem.Span(masc.Text(itemValue.TaskTitle)),
-					elem.Span(masc.Markup(masc.Class("todo-task-id")), masc.Text("("+itemValue.TaskID+")")),
-				}
-				if assigneeText != "" {
-					taskHeaderChildren = append(taskHeaderChildren, elem.Span(masc.Markup(masc.Class("todo-task-assignees")), masc.Text(assigneeText)))
-				}
-				currentGroup = append(currentGroup, elem.Button(
-					append([]masc.MarkupOrChild{
-						masc.Markup(
-							masc.Class("todo-task-header"),
-							masc.Property("type", "button"),
-							event.MouseDown(func(e *masc.Event) {
-								send(OpenDetailFromTodo{TaskID: itemValue.TaskID})
-							}).PreventDefault(),
-						),
-					}, toMarkupChildren(taskHeaderChildren)...)...,
+				children = append(children, elem.Div(
+					append([]masc.MarkupOrChild{masc.Markup(
+						masc.Class("todo-subtask"),
+						masc.ElementKey(itemValue.TaskID+"/"+itemValue.SubtaskID),
+					)}, toMarkupChildren(subtaskChildren)...)...,
 				))
 			}
 
-			subtaskChildren := []masc.ComponentOrHTML{
-				elem.Input(masc.Markup(
-					masc.Property("type", "checkbox"),
-					masc.Property("checked", false),
-					masc.Style("cursor", "pointer"),
-					event.Change(func(e *masc.Event) { send(ToggleTaskSubtask{TaskID: itemValue.TaskID, Index: itemValue.SubtaskIndex}) }),
-				)),
-				elem.Span(masc.Markup(masc.Class("todo-subtask-text")), masc.Text(itemValue.SubtaskText)),
-			}
-			if itemValue.SubtaskDueDate != "" {
-				subtaskChildren = append(subtaskChildren, elem.Span(
-					masc.Markup(masc.Class("todo-due")),
-					masc.Text("Due: "+itemValue.SubtaskDueDate),
-				))
-			}
-			currentGroup = append(currentGroup, elem.Div(
-				append([]masc.MarkupOrChild{masc.Markup(
-					masc.Class("todo-subtask"),
-					masc.ElementKey(itemValue.TaskID+"/"+itemValue.SubtaskID),
-				)}, toMarkupChildren(subtaskChildren)...)...,
-			))
-		}
-		if len(currentGroup) > 0 {
 			listChildren = append(listChildren, elem.Div(
-				append([]masc.MarkupOrChild{masc.Markup(masc.Class("todo-task-group"), masc.ElementKey(currentTaskID))}, toMarkupChildren(currentGroup)...)...,
+				append([]masc.MarkupOrChild{masc.Markup(masc.Class("todo-task-group"), masc.ElementKey(group.TaskID))}, toMarkupChildren(children)...)...,
 			))
 		}
 	}
